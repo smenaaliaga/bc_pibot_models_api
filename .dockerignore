@@ -1,0 +1,44 @@
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# Testing
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+
+# Docs
+README.md
+LICENSE
+docs/
+
+# Cached models (downloaded at runtime)
+model_cache/
+
+# Logs
+*.log
+logs/
+
+# Env files
+.env
+.env.*

@@ -1,0 +1,51 @@
+# ── Stage 1: builder ──────────────────────────────────────────
+FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04 AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.11 python3.11-venv python3-pip && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY requirements.txt .
+
+RUN python3.11 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
+    && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt \
+    && /opt/venv/bin/pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu121
+
+
+# ── Stage 2: runtime ─────────────────────────────────────────
+FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04 AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.11 && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --gid 1000 appuser \
+    && useradd --uid 1000 --gid appuser --shell /bin/bash --create-home appuser
+
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+WORKDIR /app
+COPY app/ ./app/
+COPY scripts/ ./scripts/
+
+RUN mkdir -p /app/model_cache && chown -R appuser:appuser /app
+
+USER appuser
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
+    CMD ["python3.11", "scripts/healthcheck.py"]
+
+CMD ["uvicorn", "app.main:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8000", \
+     "--workers", "1", \
+     "--timeout-keep-alive", "30", \
+     "--log-level", "info"]

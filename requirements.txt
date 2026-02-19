@@ -1,0 +1,20 @@
+# Core
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+pydantic>=2.0,<3
+pydantic-settings>=2.0,<3
+
+# ML
+torch>=2.1,<3
+transformers>=4.40,<5
+huggingface-hub>=0.23,<1
+safetensors>=0.4
+pytorch-crf>=0.7,<1
+
+# Observability
+prometheus-fastapi-instrumentator>=7.0,<8
+structlog>=24.0
+python-json-logger>=2.0,<3
+
+# HTTP client (healthcheck, tests)
+httpx>=0.27

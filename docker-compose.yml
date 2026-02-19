@@ -1,0 +1,53 @@
+# PIBot Serving – Docker Compose
+# Run:  docker compose up --build
+
+services:
+  pibert-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pibert-api
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Persist HF cache across restarts (avoids re-downloading)
+      - model_cache:/app/model_cache
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "scripts/healthcheck.py"]
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  # ── GPU variant (uncomment to use) ──────────────────────────
+  # pibert-api-gpu:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.gpu
+  #   container_name: pibert-api-gpu
+  #   ports:
+  #     - "${APP_PORT:-8000}:8000"
+  #   env_file:
+  #     - .env
+  #   volumes:
+  #     - model_cache:/app/model_cache
+  #   restart: unless-stopped
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+
+volumes:
+  model_cache:
