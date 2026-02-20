@@ -71,7 +71,8 @@ Reglas aplicadas:
                 - `fecha_fin`: último día del período.
                 - Si el período es solo año (ej: "durante el 2024"), el rango cubre
                     el año completo: `2024-01-01` a `2024-12-31`.
-        - Si `req_form=latest` y no hay período explícito, usa fallback al mes/año actual.
+        - Si `req_form=latest`, siempre entrega el período anterior al actual
+          según la frecuencia (mes, trimestre o año).
 
 7) Rangos desordenados
     - Si el rango viene invertido en texto (ej. mayo→enero), se ordena automáticamente
@@ -1070,6 +1071,23 @@ def _format_year_start(date_value: datetime) -> str:
     return f"{date_value.year:04d}-01-01"
 
 
+def _previous_month_anchor(date_value: datetime) -> datetime:
+    if date_value.month == 1:
+        return datetime(date_value.year - 1, 12, 1)
+    return datetime(date_value.year, date_value.month - 1, 1)
+
+
+def _previous_quarter_anchor(date_value: datetime) -> datetime:
+    quarter_start = _quarter_start_month(date_value.month)
+    if quarter_start == 1:
+        return datetime(date_value.year - 1, 10, 1)
+    return datetime(date_value.year, quarter_start - 3, 1)
+
+
+def _previous_year_anchor(date_value: datetime) -> datetime:
+    return datetime(date_value.year - 1, 1, 1)
+
+
 def _quarter_start_month(month: int) -> int:
     """Retorna mes inicial del trimestre para un mes dado."""
     return ((month - 1) // 3) * 3 + 1
@@ -1303,8 +1321,10 @@ def _resolve_period_value(
         if req_form_norm == "latest":
             today = datetime.now()
             if is_quarterly_context:
-                return [_format_quarter_start(today), _format_quarter_end(today)]
-            return [_format_month_start(today), _format_month_end(today)]
+                prev_quarter = _previous_quarter_anchor(today)
+                return [_format_quarter_start(prev_quarter), _format_quarter_end(prev_quarter)]
+            prev_month = _previous_month_anchor(today)
+            return [_format_month_start(prev_month), _format_month_end(prev_month)]
         return None
 
     parsed_dates = [
@@ -1325,12 +1345,14 @@ def _resolve_period_value(
         parsed_dates = quarter_dates
 
     if req_form_norm == "latest":
-        last_date = max(parsed_dates)
         if has_year_only_reference and all(date_value.month == 1 and date_value.day == 1 for date_value in parsed_dates):
-            return [_format_year_start(last_date), f"{last_date.year:04d}-12-31"]
+            prev_year = _previous_year_anchor(datetime.now())
+            return [_format_year_start(prev_year), f"{prev_year.year:04d}-12-31"]
         if is_quarterly_context:
-            return [_format_quarter_start(last_date), _format_quarter_end(last_date)]
-        return [_format_month_start(last_date), _format_month_end(last_date)]
+            prev_quarter = _previous_quarter_anchor(datetime.now())
+            return [_format_quarter_start(prev_quarter), _format_quarter_end(prev_quarter)]
+        prev_month = _previous_month_anchor(datetime.now())
+        return [_format_month_start(prev_month), _format_month_end(prev_month)]
 
     if req_form_norm == "range":
         sorted_dates = sorted(parsed_dates)

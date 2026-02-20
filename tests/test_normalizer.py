@@ -19,13 +19,17 @@ def test_period_latest_fallback_to_today_when_missing_period_entity():
     )
 
     now = datetime.now()
-    month_start = f"{now.year:04d}-{now.month:02d}-01"
-    if now.month == 12:
-        next_month = datetime(now.year + 1, 1, 1)
+    if now.month == 1:
+        prev_month = datetime(now.year - 1, 12, 1)
     else:
-        next_month = datetime(now.year, now.month + 1, 1)
+        prev_month = datetime(now.year, now.month - 1, 1)
+    month_start = f"{prev_month.year:04d}-{prev_month.month:02d}-01"
+    if prev_month.month == 12:
+        next_month = datetime(prev_month.year + 1, 1, 1)
+    else:
+        next_month = datetime(prev_month.year, prev_month.month + 1, 1)
     last_day = (next_month - datetime.resolution).day
-    month_end = f"{now.year:04d}-{now.month:02d}-{last_day:02d}"
+    month_end = f"{prev_month.year:04d}-{prev_month.month:02d}-{last_day:02d}"
     assert result["period"] == [month_start, month_end]
 
 
@@ -231,6 +235,32 @@ def test_frequency_q_snaps_period_to_quarter_start():
 
     assert result["frequency"] == ["q"]
     assert result["period"] == ["2024-01-01", "2024-03-31"]
+
+
+def test_latest_quarter_returns_previous_quarter():
+    result = normalize_entities(
+        entities={"indicator": ["pib"]},
+        calc_mode="original",
+        req_form="latest",
+    )
+
+    now = datetime.now()
+    quarter_start_month = ((now.month - 1) // 3) * 3 + 1
+    if quarter_start_month == 1:
+        prev_quarter = datetime(now.year - 1, 10, 1)
+    else:
+        prev_quarter = datetime(now.year, quarter_start_month - 3, 1)
+
+    quarter_start = f"{prev_quarter.year:04d}-{prev_quarter.month:02d}-01"
+    quarter_end_month = prev_quarter.month + 2
+    if quarter_end_month == 12:
+        next_month = datetime(prev_quarter.year + 1, 1, 1)
+    else:
+        next_month = datetime(prev_quarter.year, quarter_end_month + 1, 1)
+    last_day = (next_month - datetime.resolution).day
+    quarter_end = f"{prev_quarter.year:04d}-{quarter_end_month:02d}-{last_day:02d}"
+
+    assert result["period"] == [quarter_start, quarter_end]
 
 
 def test_quarter_range_uses_last_day_on_upper_bound():
