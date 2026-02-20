@@ -8,6 +8,7 @@ Características:
 - Normalización mediante fuzzy matching (tolerancia a faltas de ortografía)
 - Inducción de valores faltantes según reglas semánticas
 - Conversión de períodos a formato DD-MM-YYYY con día fijo 01
+- Separación de menciones compuestas con conjunción "y" (en entidades soportadas)
 - Registro de entidades no reconocidas (failed matches)
 - Salida en formato JSON estructurado
 
@@ -30,14 +31,24 @@ Reglas aplicadas:
 4) Inferencias semánticas
     - `indicator` se puede inferir según `frequency` (o default si falta contexto).
     - `seasonality` se infiere desde `calc_mode` cuando no viene explícita.
-        - Regla crítica de negocio:
-            - Si `entities.indicator` viene vacío o genérico (`economia`/similar)
-                y NO hay `frequency`, entonces:
-                    `entities_normalized.indicator = ["imacec"]`
-                    `entities_normalized.frequency = ["m"]`
-            - Si `entities.indicator` viene vacío o genérico y la `frequency`
-                normalizada es `q` o `a`, entonces:
-                    `entities_normalized.indicator = ["pib"]`
+    - Precedencia de estacionalidad:
+        - Si `entities.seasonality` existe y normaliza a valor válido (`sa`/`nsa`),
+          se respeta ese valor explícito.
+        - Solo si falta o no matchea, se aplica inferencia por `calc_mode`.
+    - Si `seasonality` no viene o no matchea:
+        - `calc_mode=prev_period` → `sa`
+        - `calc_mode=yoy` → `nsa`
+        - cualquier otro caso (`original`, `contribution`, vacío, etc.) → `nsa`
+    - Si `frequency` no viene y `indicator` normalizado es `pib`, se asume `frequency=q`.
+    - Si `frequency` no viene y `indicator` normalizado es `imacec`, se asume `frequency=m`.
+    - Regla crítica de negocio:
+        - Si `entities.indicator` viene vacío o genérico (`economia`/similar)
+          y NO hay `frequency`, entonces:
+            `entities_normalized.indicator = ["imacec"]`
+            `entities_normalized.frequency = ["m"]`
+        - Si `entities.indicator` viene vacío o genérico y la `frequency`
+          normalizada es `q` o `a`, entonces:
+            `entities_normalized.indicator = ["pib"]`
 
 5) Regla de formato de fecha
     - Toda fecha de `period` se entrega como `DD-MM-YYYY`.
@@ -46,7 +57,11 @@ Reglas aplicadas:
 6) Reglas por `req_form` para `period` en `entities_normalized`
     - `latest`: devuelve la última fecha disponible como string.
     - `point`: devuelve la fecha mencionada como string.
-    - `range`: devuelve lista de 2 elementos `[fecha_menor, fecha_mayor]`.
+    - `range`: devuelve lista de 2 elementos `[fecha_inicio, fecha_fin]`.
+        - `fecha_inicio`: primer día del período inicial.
+        - `fecha_fin`: último día del período final.
+        - Si el período es solo año (ej: "durante el 2024"), el rango cubre
+          el año completo: `01-01-YYYY` a `31-12-YYYY`.
     - Si `req_form=latest` y no hay período explícito, usa fallback al mes/año actual (`01-MM-YYYY`).
 
 7) Rangos desordenados
@@ -60,6 +75,21 @@ Reglas aplicadas:
 9) Contrato de salida API (`normalize_entities`)
     - `indicator`, `seasonality`, `frequency`, `activity`, `region`, `investment`: listas.
     - `period`: string (`latest`/`point`) o lista de 2 elementos (`range`).
+
+10) Separación de entidades compuestas por conjunción
+        - Para `activity`, `region` e `investment`, si un valor contiene "y"
+            se separa en subvalores y se normaliza cada uno.
+        - Protección anti-sobre-splitting: si la frase completa ya coincide
+            fuertemente con un término del vocabulario, NO se divide.
+
+11) Regla de período trimestral
+        - Si `frequency=q` o el texto de `period` menciona trimestres,
+            `entities_normalized.period` se entrega en formato trimestral
+            (`DD-MM-YYYY` con mes de inicio de trimestre: 01, 04, 07, 10).
+        - Para `req_form=range`, el límite superior se entrega como último día
+            del trimestre final.
+        - Ejemplo: "del primer trimestre al cuarto trimestre del 2024"
+            → `["01-01-2024", "31-12-2024"]`.
 
 Entidades soportadas:
   - INDICATOR: imacec, pib
@@ -133,6 +163,7 @@ SEASONALITY_TERMS = {
         "no ajustado por estacionalidad", "sin correccion de estacionalidad",
         "sin estacionalidad aplicada", "sin ajustar por estacionalidad",
         "datos sin ajuste estacional", "serie sin ajuste estacional",
+        "estacional", "con estacionalidad", "sin eliminar estacionalidad",
     ],
 }
 
@@ -166,6 +197,7 @@ ACTIVITY_TERMS_IMACEC = {
 ACTIVITY_TERMS_PIB = {
     "agropecuario": ["agro", "agropecuario", "agropecuaria"],
     "pesca": ["pesca", "pesquero"],
+    "mineria": ["mineria", "minería", "minero", "minera"],
     "industria": [
         "industria", "industrial", "manufacturera", "industria manufacturera",
         "manufactura"
@@ -497,6 +529,59 @@ def _is_generic_indicator_value(indicator_value: Optional[str]) -> bool:
     return any(_fuzzy_match(indicator_normalized, [term], threshold=0.72) for term in generic_terms)
 
 
+def _entity_vocab_for_key(entity_key: str, indicator: Optional[str] = None) -> Optional[Dict[str, List[str]]]:
+    if entity_key == "activity":
+        return ACTIVITY_TERMS_PIB if indicator == "pib" else ACTIVITY_TERMS_IMACEC
+    if entity_key == "region":
+        return REGION_TERMS
+    if entity_key == "investment":
+        return INVESTMENT_TERMS
+    return None
+
+
+def _split_conjoined_values(
+    entity_key: str,
+    raw_values: List[str],
+    indicator: Optional[str],
+) -> List[str]:
+    """
+    Divide valores con conjunción "y" para entidades compuestas.
+
+    Aplica para activity/region/investment, excepto cuando la frase completa
+    ya coincide fuertemente con un término válido del vocabulario.
+    """
+    if entity_key not in {"activity", "region", "investment"}:
+        return raw_values
+
+    vocab = _entity_vocab_for_key(entity_key, indicator)
+    if not vocab:
+        return raw_values
+
+    expanded: List[str] = []
+    for raw in raw_values:
+        if not raw:
+            continue
+
+        # Si la frase completa ya es una buena coincidencia, no dividir.
+        full_match = _best_vocab_key(raw, vocab=vocab, threshold=0.9)
+        if full_match:
+            if raw not in expanded:
+                expanded.append(raw)
+            continue
+
+        parts = [part.strip() for part in re.split(r"\s+y\s+", raw, flags=re.IGNORECASE) if part.strip()]
+        if len(parts) <= 1:
+            if raw not in expanded:
+                expanded.append(raw)
+            continue
+
+        for part in parts:
+            if part not in expanded:
+                expanded.append(part)
+
+    return expanded
+
+
 # ============================================================================
 # FUNCIONES DE NORMALIZACIÓN POR ENTIDAD
 # ============================================================================
@@ -530,8 +615,17 @@ def normalize_indicator(indicator_value: Optional[str],
             # Por defecto asumir IMACEC (más general)
             return "imacec"
 
+    indicator_normalized = _normalize_text(indicator_value)
+
+    # Detección explícita por palabras clave para frases compuestas
+    # (ej: "pib regional" -> "pib").
+    if re.search(r"\bimacec\b", indicator_normalized):
+        return "imacec"
+    if re.search(r"\bpib\b", indicator_normalized) or "producto interno bruto" in indicator_normalized:
+        return "pib"
+
     match = _best_vocab_key(
-        input_text=indicator_value,
+        input_text=indicator_normalized,
         vocab={
             "imacec": ["imacec"],
             "pib": ["pib", "producto interno bruto", "producto bruto", "interno bruto"],
@@ -556,11 +650,11 @@ def normalize_seasonality(seasonality_value: Optional[str],
     Normaliza SEASONALITY o infiere por defecto según calc_mode.
     
     Reglas de inferencia:
-        1. Si SEASONALITY existe y coincide → usar ese valor
-        2. Si SEASONALITY está vacío:
-           a. Si calc_mode in ("original", "yoy", "contribution") → asumir "nsa"
-           b. Si calc_mode = "prev_period" → asumir "sa"
-           c. Si calc_mode está vacío → asumir "nsa"
+        1. Si SEASONALITY existe y coincide → usar ese valor (prioridad alta)
+        2. Si SEASONALITY está vacío o no coincide:
+           a. Si calc_mode = "prev_period" → asumir "sa"
+           b. Si calc_mode = "yoy" → asumir "nsa"
+           c. Si calc_mode in ("original", "contribution") o está vacío → asumir "nsa"
     
     Parámetros:
         seasonality_value: Valor detectado por NER (ej: "desestacionalizado")
@@ -583,11 +677,13 @@ def normalize_seasonality(seasonality_value: Optional[str],
         if match:
             return match
 
-    # Inferir por defecto según calc_mode
+    # Inferir por defecto según calc_mode (solo cuando seasonality no vino o no matcheó)
     if calc_mode == "prev_period":
         return "sa"
+    if calc_mode == "yoy":
+        return "nsa"
     else:
-        # original, yoy, contribution → nsa
+        # original, contribution, vacío, etc. → nsa
         return "nsa"
 
 
@@ -732,24 +828,24 @@ def normalize_period(period_value: Optional[str]) -> Tuple[Optional[str], List[s
             today = datetime.now()
             return _format_day_one(today), []
 
-    # Caso 2: Año explícito (ej: "2024")
+    # Caso 2: Año explícito (ej: "2024") o implícito (año actual)
     year_match = re.search(r'\b(20\d{2})\b', period_normalized)
+    year = int(year_match.group(1)) if year_match else datetime.now().year
+
+    # Buscar mes explícito (ej: "enero 2024" o "enero")
+    for month_name, month_num in MONTHS.items():
+        if month_name in period_normalized:
+            return f"01-{month_num:02d}-{year}", []
+
+    # Buscar trimestre (ej: "1er trimestre 2024", "T1 2024", "T1")
+    quarter_match = re.search(r'(?:t|trimestre)\s*([1-4])', period_normalized)
+    if quarter_match:
+        quarter = int(quarter_match.group(1))
+        start_month = QUARTERS_START_MONTH[quarter]
+        return f"01-{start_month:02d}-{year}", []
+
+    # Si solo hay año, usar 01-01-YYYY
     if year_match:
-        year = int(year_match.group(1))
-        
-        # Buscar mes explícito (ej: "enero 2024")
-        for month_name, month_num in MONTHS.items():
-            if month_name in period_normalized:
-                return f"01-{month_num:02d}-{year}", []
-
-        # Buscar trimestre (ej: "1er trimestre 2024", "T1 2024")
-        quarter_match = re.search(r'(?:t|trimestre)\s*([1-4])', period_normalized)
-        if quarter_match:
-            quarter = int(quarter_match.group(1))
-            start_month = QUARTERS_START_MONTH[quarter]
-            return f"01-{start_month:02d}-{year}", []
-
-        # Si solo hay año, usar 01-01-YYYY
         return f"01-01-{year}", []
 
     # Caso 3: Formato ISO (ej: "2024-01", "2024-T1")
@@ -961,6 +1057,116 @@ def _format_day_one(date_value: datetime) -> str:
     return f"01-{date_value.month:02d}-{date_value.year}"
 
 
+def _quarter_start_month(month: int) -> int:
+    """Retorna mes inicial del trimestre para un mes dado."""
+    return ((month - 1) // 3) * 3 + 1
+
+
+def _format_quarter_start(date_value: datetime) -> str:
+    """Formatea una fecha al inicio de su trimestre en DD-MM-YYYY."""
+    quarter_month = _quarter_start_month(date_value.month)
+    return f"01-{quarter_month:02d}-{date_value.year}"
+
+
+def _format_month_end(date_value: datetime) -> str:
+    """Formatea una fecha al último día de su mes en DD-MM-YYYY."""
+    if date_value.month == 12:
+        next_month = datetime(date_value.year + 1, 1, 1)
+    else:
+        next_month = datetime(date_value.year, date_value.month + 1, 1)
+    last_day = next_month - timedelta(days=1)
+    return last_day.strftime("%d-%m-%Y")
+
+
+def _format_quarter_end(date_value: datetime) -> str:
+    """Formatea una fecha al último día de su trimestre en DD-MM-YYYY."""
+    quarter_start = _quarter_start_month(date_value.month)
+    quarter_end_month = quarter_start + 2
+    quarter_end_anchor = datetime(date_value.year, quarter_end_month, 1)
+    return _format_month_end(quarter_end_anchor)
+
+
+def _extract_quarter_based_dates(text: str) -> List[str]:
+    """Extrae fechas trimestrales DD-MM-YYYY desde menciones de trimestres."""
+    normalized_text = _normalize_text(text)
+    tokens = re.findall(r'[a-záéíóúüñ0-9]+', normalized_text)
+    if not tokens:
+        return []
+
+    quarter_word_map = {
+        "primer": 1,
+        "primero": 1,
+        "segundo": 2,
+        "tercer": 3,
+        "tercero": 3,
+        "cuarto": 4,
+    }
+
+    quarter_tokens: List[Tuple[int, int]] = []  # (token_idx, quarter)
+    year_tokens: List[Tuple[int, int]] = []     # (token_idx, year)
+
+    for idx, token in enumerate(tokens):
+        if re.fullmatch(r'20\d{2}', token):
+            year_tokens.append((idx, int(token)))
+            continue
+
+        compact_quarter = re.fullmatch(r'[tq]([1-4])', token)
+        if compact_quarter:
+            quarter_tokens.append((idx, int(compact_quarter.group(1))))
+            continue
+
+        if token in quarter_word_map and idx + 1 < len(tokens) and tokens[idx + 1].startswith("trimestre"):
+            quarter_tokens.append((idx, quarter_word_map[token]))
+            continue
+
+        if token in {"1", "2", "3", "4"} and idx + 1 < len(tokens) and tokens[idx + 1].startswith("trimestre"):
+            quarter_tokens.append((idx, int(token)))
+            continue
+
+    if not quarter_tokens:
+        return []
+
+    resolved_dates: List[str] = []
+    current_year = datetime.now().year
+
+    for quarter_idx, quarter in quarter_tokens:
+        right_year = next((year for idx, year in year_tokens if idx > quarter_idx), None)
+        left_year = next((year for idx, year in reversed(year_tokens) if idx < quarter_idx), None)
+        year = right_year if right_year is not None else left_year
+        if year is None:
+            year = current_year
+
+        start_month = QUARTERS_START_MONTH[quarter]
+        date_value = f"01-{start_month:02d}-{year}"
+        if date_value not in resolved_dates:
+            resolved_dates.append(date_value)
+
+    return resolved_dates
+
+
+def _has_quarter_reference(text: str) -> bool:
+    normalized_text = _normalize_text(text)
+    if "trimestre" in normalized_text:
+        return True
+    return re.search(r'\b[tq]\s*[1-4]\b|\b[tq][1-4]\b', normalized_text) is not None
+
+
+def _extract_year_based_dates(text: str) -> List[str]:
+    """Extrae años explícitos como fechas de inicio de año DD-MM-YYYY."""
+    normalized_text = _normalize_text(text)
+    year_matches = re.findall(r'\b(20\d{2})\b', normalized_text)
+    if not year_matches:
+        return []
+
+    resolved_dates: List[str] = []
+    for year_text in year_matches:
+        date_value = f"01-01-{int(year_text)}"
+        if date_value not in resolved_dates:
+            resolved_dates.append(date_value)
+
+    return resolved_dates
+
+
 def _extract_month_based_dates(text: str) -> List[str]:
     """Extrae fechas DD-MM-YYYY desde menciones de meses en un texto de período."""
     normalized_text = _normalize_text(text)
@@ -981,8 +1187,17 @@ def _extract_month_based_dates(text: str) -> List[str]:
         if month_match:
             month_tokens.append((idx, MONTHS[month_match]))
 
-    if not month_tokens or not year_tokens:
+    if not month_tokens:
         return []
+
+    if not year_tokens:
+        current_year = datetime.now().year
+        resolved_dates: List[str] = []
+        for _, month_num in month_tokens:
+            date_value = f"01-{month_num:02d}-{current_year}"
+            if date_value not in resolved_dates:
+                resolved_dates.append(date_value)
+        return resolved_dates
 
     resolved_dates: List[str] = []
     for month_idx, month_num in month_tokens:
@@ -1004,6 +1219,7 @@ def _resolve_period_value(
     calc_mode: Optional[str],
     base_normalized: Dict[str, Optional[str]],
     req_form: Optional[str],
+    frequency: Optional[str] = None,
 ) -> Optional[Union[str, List[str]]]:
     """
     Resuelve period según req_form:
@@ -1012,19 +1228,38 @@ def _resolve_period_value(
             - range  -> lista [fecha_inicio, fecha_fin]
     """
     candidate_dates: List[str] = []
+    is_quarterly_context = (frequency == "q") or any(_has_quarter_reference(raw) for raw in raw_values if raw)
+    has_year_only_reference = False
 
     for raw in raw_values:
         if not raw:
             continue
 
-        # Para rangos, intentar extraer múltiples meses en la misma frase
-        extracted_dates = _extract_month_based_dates(raw)
+        # En contexto trimestral, priorizar extracción de trimestres explícitos.
+        extracted_dates = _extract_quarter_based_dates(raw) if is_quarterly_context else []
+
+        # Luego intentar extracción por meses (útil para contexto mensual o fallback).
+        if not extracted_dates:
+            extracted_dates = _extract_month_based_dates(raw)
+
         for extracted in extracted_dates:
             if extracted not in candidate_dates:
                 candidate_dates.append(extracted)
 
-        # Si no hubo extracción de pares mes-año, usar parse simple como fallback
+        # Si no hubo extracción de pares mes-año/trimestre, intentar años explícitos.
         if not extracted_dates:
+            year_dates = _extract_year_based_dates(raw)
+            for year_date in year_dates:
+                if year_date not in candidate_dates:
+                    candidate_dates.append(year_date)
+
+            normalized_raw = _normalize_text(raw)
+            has_month_reference = any(month_name in normalized_raw for month_name in MONTHS)
+            if year_dates and not has_month_reference and not _has_quarter_reference(raw):
+                has_year_only_reference = True
+
+        # Si no hubo extracción, usar parse simple como fallback
+        if not extracted_dates and not _extract_year_based_dates(raw):
             normalized_single = normalize_period(raw)[0]
             if normalized_single and normalized_single not in candidate_dates:
                 candidate_dates.append(normalized_single)
@@ -1039,6 +1274,8 @@ def _resolve_period_value(
     if not candidate_dates:
         if req_form_norm == "latest":
             today = datetime.now()
+            if is_quarterly_context:
+                return _format_quarter_start(today)
             return _format_day_one(today)
         return None
 
@@ -1048,6 +1285,17 @@ def _resolve_period_value(
     if not parsed_dates:
         return None
 
+    if is_quarterly_context:
+        quarter_dates: List[datetime] = []
+        seen_quarters = set()
+        for date_value in parsed_dates:
+            quarter_date = datetime(date_value.year, _quarter_start_month(date_value.month), 1)
+            quarter_key = (quarter_date.year, quarter_date.month)
+            if quarter_key not in seen_quarters:
+                seen_quarters.add(quarter_key)
+                quarter_dates.append(quarter_date)
+        parsed_dates = quarter_dates
+
     if req_form_norm == "latest":
         last_date = max(parsed_dates)
         return _format_day_one(last_date)
@@ -1055,7 +1303,12 @@ def _resolve_period_value(
     if req_form_norm == "range":
         sorted_dates = sorted(parsed_dates)
         first_date = _format_day_one(sorted_dates[0])
-        last_date = _format_day_one(sorted_dates[-1])
+        if has_year_only_reference and all(date_value.month == 1 and date_value.day == 1 for date_value in sorted_dates):
+            last_date = f"31-12-{sorted_dates[-1].year}"
+        elif is_quarterly_context:
+            last_date = _format_quarter_end(sorted_dates[-1])
+        else:
+            last_date = _format_month_end(sorted_dates[-1])
         return [first_date, last_date]
 
     # point (o default): fecha mencionada
@@ -1086,6 +1339,14 @@ def normalize_entities(
 
         raw_values = entities.get(key) or []
 
+        # Separar expresiones compuestas con "y" en activity/region/investment
+        # antes de normalizar cada subentidad.
+        raw_values = _split_conjoined_values(
+            entity_key=key,
+            raw_values=raw_values,
+            indicator=base_normalized.get("indicator"),
+        )
+
         if len(raw_values) > 1:
             value = _normalize_multiple_values(key, raw_values, calc_mode, base_normalized)
         else:
@@ -1102,13 +1363,20 @@ def normalize_entities(
     if indicator_is_generic_or_missing and not raw_frequency:
         response["indicator"] = ["imacec"]
         response["frequency"] = ["m"]
+    elif not raw_frequency and "pib" in response.get("indicator", []):
+        response["frequency"] = ["q"]
+    elif not raw_frequency and "imacec" in response.get("indicator", []):
+        response["frequency"] = ["m"]
 
     period_raw_values = entities.get("period") or []
+    effective_frequency = response.get("frequency", [])
+    frequency_code = effective_frequency[0] if isinstance(effective_frequency, list) and effective_frequency else None
     response["period"] = _resolve_period_value(
         raw_values=period_raw_values,
         calc_mode=calc_mode,
         base_normalized=base_normalized,
         req_form=req_form,
+        frequency=frequency_code,
     )
 
     return response

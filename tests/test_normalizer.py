@@ -2,6 +2,7 @@ from datetime import datetime
 
 from app.model.normalizer import (
     normalize_activity,
+    normalize_period,
     normalize_entities,
     normalize_frequency,
     normalize_investment,
@@ -29,7 +30,7 @@ def test_period_range_returns_tuple_string():
         req_form="range",
     )
 
-    assert result["period"] == ["01-02-2024", "01-03-2024"]
+    assert result["period"] == ["01-02-2024", "31-03-2024"]
 
 
 def test_period_range_with_two_years_uses_correct_bounds():
@@ -39,7 +40,7 @@ def test_period_range_with_two_years_uses_correct_bounds():
         req_form="range",
     )
 
-    assert result["period"] == ["01-03-2023", "01-01-2024"]
+    assert result["period"] == ["01-03-2023", "31-01-2024"]
 
 
 def test_period_range_disordered_same_year_is_sorted_ascending():
@@ -49,7 +50,7 @@ def test_period_range_disordered_same_year_is_sorted_ascending():
         req_form="range",
     )
 
-    assert result["period"] == ["01-01-2023", "01-05-2023"]
+    assert result["period"] == ["01-01-2023", "31-05-2023"]
 
 
 def test_activity_negative_phrase_prefers_no_mineria():
@@ -97,3 +98,169 @@ def test_generic_indicator_with_quarterly_frequency_defaults_to_pib():
 
     assert result["frequency"] == ["q"]
     assert result["indicator"] == ["pib"]
+
+
+def test_period_without_year_assumes_current_year():
+    normalized, failed = normalize_period("enero")
+    current_year = datetime.now().year
+
+    assert normalized == f"01-01-{current_year}"
+    assert failed == []
+
+
+def test_period_range_without_year_assumes_current_year():
+    result = normalize_entities(
+        entities={"period": ["entre enero y mayo"], "indicator": ["imacec"]},
+        calc_mode="original",
+        req_form="range",
+    )
+    current_year = datetime.now().year
+
+    assert result["period"] == [f"01-01-{current_year}", f"31-05-{current_year}"]
+
+
+def test_activity_conjunction_is_split_and_normalized():
+    result = normalize_entities(
+        entities={"activity": ["mineria y no mineria"], "period": ["mayo"]},
+        calc_mode="prev_period",
+        req_form="range",
+    )
+
+    assert result["activity"] == ["mineria", "no_mineria"]
+
+
+def test_indicator_keeps_pib_regional_and_discards_banco_central():
+    result = normalize_entities(
+        entities={
+            "indicator": ["banco central", "pib regional"],
+            "region": ["chile"],
+            "period": ["durante el año 2024"],
+        },
+        calc_mode="original",
+        req_form="range",
+    )
+
+    assert result["indicator"] == ["pib"]
+
+
+def test_pib_without_frequency_infers_quarterly_frequency():
+    result = normalize_entities(
+        entities={
+            "indicator": ["banco central", "pib regional"],
+            "region": ["chile"],
+            "period": ["durante el año 2024"],
+        },
+        calc_mode="original",
+        req_form="range",
+    )
+
+    assert result["indicator"] == ["pib"]
+    assert result["frequency"] == ["q"]
+
+
+def test_pib_activity_conjunction_splits_and_keeps_both_entities():
+    result = normalize_entities(
+        entities={
+            "indicator": ["pib"],
+            "activity": ["minero y comercial"],
+            "frequency": ["anual"],
+            "seasonality": ["con estacionalidad"],
+        },
+        calc_mode="prev_period",
+        req_form="latest",
+    )
+
+    assert result["activity"] == ["mineria", "comercio"]
+
+
+def test_explicit_seasonality_overrides_prev_period_default():
+    result = normalize_entities(
+        entities={
+            "indicator": ["pib"],
+            "seasonality": ["sin ajuste estacional"],
+        },
+        calc_mode="prev_period",
+        req_form="point",
+    )
+
+    assert result["seasonality"] == ["nsa"]
+
+
+def test_explicit_seasonality_overrides_yoy_default():
+    result = normalize_entities(
+        entities={
+            "indicator": ["pib"],
+            "seasonality": ["desestacionalizado"],
+        },
+        calc_mode="yoy",
+        req_form="point",
+    )
+
+    assert result["seasonality"] == ["sa"]
+
+
+def test_quarter_period_range_text_returns_quarter_boundaries():
+    result = normalize_entities(
+        entities={
+            "indicator": ["pib"],
+            "period": ["del primer trimestre al cuarto trimestre del 2024"],
+        },
+        calc_mode="original",
+        req_form="range",
+    )
+
+    assert result["period"] == ["01-01-2024", "31-12-2024"]
+
+
+def test_frequency_q_snaps_period_to_quarter_start():
+    result = normalize_entities(
+        entities={
+            "indicator": ["pib"],
+            "frequency": ["trimestral"],
+            "period": ["febrero 2024"],
+        },
+        calc_mode="original",
+        req_form="point",
+    )
+
+    assert result["frequency"] == ["q"]
+    assert result["period"] == "01-01-2024"
+
+
+def test_quarter_range_uses_last_day_on_upper_bound():
+    result = normalize_entities(
+        entities={
+            "indicator": ["pib"],
+            "period": ["entre el primer trimestre y el tercer trimestre del 2024"],
+        },
+        calc_mode="original",
+        req_form="range",
+    )
+
+    assert result["period"] == ["01-01-2024", "30-09-2024"]
+
+
+def test_year_only_range_uses_last_day_of_year_on_upper_bound():
+    result = normalize_entities(
+        entities={
+            "indicator": ["imacec"],
+            "period": ["durante el 2024"],
+        },
+        calc_mode="yoy",
+        req_form="range",
+    )
+
+    assert result["period"] == ["01-01-2024", "31-12-2024"]
+
+
+def test_explicit_imacec_without_frequency_infers_monthly_frequency():
+    result = normalize_entities(
+        entities={
+            "indicator": ["imacec"],
+            "period": ["durante el 2024"],
+        },
+        calc_mode="yoy",
+        req_form="range",
+    )
+
+    assert result["frequency"] == ["m"]
