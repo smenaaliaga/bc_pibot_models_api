@@ -50,6 +50,21 @@ Reglas aplicadas:
           y NO hay `frequency`, entonces:
             `entities_normalized.indicator = ["imacec"]`
             `entities_normalized.frequency = ["m"]`
+                - Regla previa por actividad específica:
+                        - Si además `intents.activity` es `"specific"` o
+                            `"specific y"` y existe
+                            `entities.activity`, se evalúa primero pertenencia de
+                            esas actividades:
+                                          1) Si todas matchean en `ACTIVITY_TERMS_IMACEC` →
+                                   `entities_normalized.indicator = ["imacec"]`
+                                   `entities_normalized.frequency = ["m"]`
+                                          2) Si no calzan todas en IMACEC, pero sí en
+                                              `ACTIVITY_TERMS_PIB` →
+                                   `entities_normalized.indicator = ["pib"]`
+                                   `entities_normalized.frequency = ["q"]`
+                                          3) Si hay mezcla/parciales, se prioriza el
+                                              vocabulario con mayor cobertura de matches;
+                                              en empate con matches se favorece IMACEC.
                 - Excepción a la regla anterior:
                         - Si `entities.indicator` viene vacío o genérico, NO hay `frequency`,
                             y `intents.region` o `intents.investment` es distinto de `none`,
@@ -172,7 +187,8 @@ SEASONALITY_TERMS = {
         "no ajustado por estacionalidad", "sin correccion de estacionalidad",
         "sin estacionalidad aplicada", "sin ajustar por estacionalidad",
         "datos sin ajuste estacional", "serie sin ajuste estacional",
-        "estacional", "con estacionalidad", "sin eliminar estacionalidad",
+        "estacional", "con estacionalidad", "serie con estacionalidad",
+        "sin eliminar estacionalidad",
     ],
 }
 
@@ -191,7 +207,7 @@ FREQUENCY_TERMS = {
 
 ACTIVITY_TERMS_IMACEC = {
     "bienes": ["bienes", "producciones de bienes"],
-    "mineria": ["minería", "minero", "mineria"],
+    "mineria": ["mineria", "minería", "minero", "minera"],
     "industria": ["industria", "industrial"],
     "resto_bienes": ["resto de bienes", "otros bienes"],
     "comercio": ["comercio", "comercial"],
@@ -229,7 +245,7 @@ ACTIVITY_TERMS_PIB = {
     "servicio_financieros": ["servicios financieros", "financieros", "finanzas"],
     "servicios_empresariales": [
         "servicios empresariales", "servicios de empresas",
-        "servicios profesionales", "empresariales", "empresas"
+        "servicios profesionales", "empresariales", "empresas", 
     ],
     "servicio_viviendas": [
         "viviendas", "servicios de vivienda", "servicios inmobiliarios",
@@ -589,6 +605,25 @@ def _split_conjoined_values(
                 expanded.append(part)
 
     return expanded
+
+
+def _activity_match_count(raw_values: List[str], vocab: Dict[str, List[str]]) -> int:
+    """Cuenta cuántas actividades raw coinciden con el vocabulario dado."""
+    match_count = 0
+    for raw in raw_values:
+        if not raw:
+            continue
+
+        if _best_vocab_key(
+            input_text=raw,
+            vocab=vocab,
+            threshold=0.75,
+            prefer_negative_if_no=True,
+            negative_threshold=0.72,
+        ):
+            match_count += 1
+
+    return match_count
 
 
 # ============================================================================
@@ -1387,7 +1422,8 @@ def normalize_entities(
     - No retorna `inference_rules_applied`
     - Todas las entidades excepto period retornan listas (vacía si no hay normalizado)
     - period retorna lista de 2 elementos en todos los casos
-    - Puede usar `intents` (region/investment) para inferencias de indicator/frequency
+        - Puede usar `intents` (activity/region/investment) para inferencias de
+            indicator/frequency
     """
     ner_output = {"interpretation": {"entities": entities}}
     base_result = normalize_ner_entities(ner_output, calc_mode=calc_mode)
@@ -1432,12 +1468,44 @@ def normalize_entities(
 
     region_intent_label = _intent_label((intents or {}).get("region"))
     investment_intent_label = _intent_label((intents or {}).get("investment"))
+    activity_intent_label = _intent_label((intents or {}).get("activity"))
     region_context_for_pib = region_intent_label not in {None, "none"}
     investment_context_for_pib = investment_intent_label not in {None, "none"}
     has_region_or_investment_context = region_context_for_pib or investment_context_for_pib
+    activity_specific_context = activity_intent_label in {"specific", "specific y", "specific_y"}
+    raw_activity_values = entities.get("activity") or []
+    split_activity_values = _split_conjoined_values(
+        entity_key="activity",
+        raw_values=raw_activity_values,
+        indicator=None,
+    )
+    has_activity_entities = bool(split_activity_values)
 
     if indicator_is_generic_or_missing and not raw_frequency:
-        if has_region_or_investment_context:
+        if activity_specific_context and has_activity_entities:
+            total_activity_values = len(split_activity_values)
+            imacec_match_count = _activity_match_count(split_activity_values, ACTIVITY_TERMS_IMACEC)
+            pib_match_count = _activity_match_count(split_activity_values, ACTIVITY_TERMS_PIB)
+
+            if imacec_match_count == total_activity_values:
+                response["indicator"] = ["imacec"]
+                response["frequency"] = ["m"]
+            elif pib_match_count == total_activity_values:
+                response["indicator"] = ["pib"]
+                response["frequency"] = ["q"]
+            elif pib_match_count > imacec_match_count and pib_match_count > 0:
+                response["indicator"] = ["pib"]
+                response["frequency"] = ["q"]
+            elif imacec_match_count > 0:
+                response["indicator"] = ["imacec"]
+                response["frequency"] = ["m"]
+            elif has_region_or_investment_context:
+                response["indicator"] = ["pib"]
+                response["frequency"] = ["q"]
+            else:
+                response["indicator"] = ["imacec"]
+                response["frequency"] = ["m"]
+        elif has_region_or_investment_context:
             response["indicator"] = ["pib"]
             response["frequency"] = ["q"]
         else:
@@ -1447,6 +1515,27 @@ def normalize_entities(
         response["frequency"] = ["q"]
     elif not raw_frequency and "imacec" in response.get("indicator", []):
         response["frequency"] = ["m"]
+
+    # Re-normalizar activity con el indicador final inferido para evitar
+    # desalineación cuando indicator cambia por reglas críticas de negocio.
+    final_indicator_values = response.get("indicator", [])
+    final_indicator = (
+        final_indicator_values[0]
+        if isinstance(final_indicator_values, list) and final_indicator_values
+        else None
+    )
+    if raw_activity_values:
+        activity_values_for_normalization = _split_conjoined_values(
+            entity_key="activity",
+            raw_values=raw_activity_values,
+            indicator=final_indicator,
+        )
+        normalized_activity_values: List[str] = []
+        for raw_activity in activity_values_for_normalization:
+            normalized_activity, _ = normalize_activity(raw_activity, final_indicator)
+            if normalized_activity and normalized_activity not in normalized_activity_values:
+                normalized_activity_values.append(normalized_activity)
+        response["activity"] = normalized_activity_values
 
     req_form_norm = (req_form or "").strip().lower()
     period_raw_values = entities.get("period") or []

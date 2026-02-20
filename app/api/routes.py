@@ -100,6 +100,7 @@ def _build_interpretation(raw: dict) -> InterpretationResponse:
             calc_mode=raw.get("calc_mode"),
             req_form=raw.get("req_form"),
             intents={
+                "activity": raw.get("activity"),
                 "region": raw.get("region"),
                 "investment": raw.get("investment"),
             },

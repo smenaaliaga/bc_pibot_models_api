@@ -346,6 +346,52 @@ def test_generic_indicator_with_region_intent_without_entity_still_infers_pib_q(
     assert result["frequency"] == ["q"]
 
 
+def test_generic_indicator_with_specific_activity_intent_imacec_activity_infers_imacec_m():
+    result = normalize_entities(
+        entities={
+            "indicator": ["economia"],
+            "activity": ["resto de bienes"],
+        },
+        calc_mode="original",
+        req_form="point",
+        intents={"activity": "specific y", "region": "none", "investment": "none"},
+    )
+
+    assert result["indicator"] == ["imacec"]
+    assert result["frequency"] == ["m"]
+
+
+def test_generic_indicator_with_specific_activity_intent_pib_activity_infers_pib_q():
+    result = normalize_entities(
+        entities={
+            "indicator": ["economia"],
+            "activity": ["agropecuario"],
+        },
+        calc_mode="original",
+        req_form="point",
+        intents={"activity": "specific y", "region": "none", "investment": "none"},
+    )
+
+    assert result["indicator"] == ["pib"]
+    assert result["frequency"] == ["q"]
+
+
+def test_generic_indicator_with_specific_activity_intent_specific_label_and_pib_activities():
+    result = normalize_entities(
+        entities={
+            "indicator": ["economico"],
+            "activity": ["servicios financieron", "servicios empresariales"],
+        },
+        calc_mode="yoy",
+        req_form="latest",
+        intents={"activity": "specific", "region": "none", "investment": "none"},
+    )
+
+    assert result["indicator"] == ["pib"]
+    assert result["frequency"] == ["q"]
+    assert result["activity"] == ["servicio_financieros", "servicios_empresariales"]
+
+
 def test_pib_point_with_year_only_period_forces_annual_frequency():
     result = normalize_entities(
         entities={

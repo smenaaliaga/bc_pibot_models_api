@@ -170,6 +170,11 @@ async def test_predict_single(client):
     assert entities_map["period"] == ["2026-02-01", "2026-02-28"]
     assert entities_map["frequency"] == []
 
+    from app.api import routes as routes_module
+    normalize_call = routes_module.normalize_entities.call_args
+    assert normalize_call is not None
+    assert normalize_call.kwargs["intents"]["activity"] == "total"
+
 
 @pytest.mark.asyncio
 async def test_predict_batch(client):
