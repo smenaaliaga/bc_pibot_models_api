@@ -38,33 +38,54 @@ class BatchPredictRequest(BaseModel):
     )
 
 
-# ── Response ──────────────────────────────────────────────────
+# ── Response building blocks ─────────────────────────────────
 
 
 class HeadPrediction(BaseModel):
-    """Result for a single classification head."""
+    """Result for a single classification head (reused by routing & interpretation)."""
 
-    label: str
+    label: str | int
     confidence: float = Field(ge=0, le=1)
 
 
-class PredictResponse(BaseModel):
-    """Full prediction output for one text."""
+class RoutingResponse(BaseModel):
+    """Routing decisions from the lightweight classifiers."""
 
-    text: str
+    macro: HeadPrediction
+    intent: HeadPrediction
+    context: HeadPrediction
+
+
+class InterpretationResponse(BaseModel):
+    """JointBERT interpretation: intents + slot filling + normalised entities."""
+
     words: List[str]
-
-    calc_mode: HeadPrediction
-    activity: HeadPrediction
-    region: HeadPrediction
-    investment: HeadPrediction
-    req_form: HeadPrediction
-
+    intents: Dict[str, HeadPrediction] = Field(
+        description="Classification heads: calc_mode, activity, region, investment, req_form",
+    )
     slot_tags: List[str] = Field(description="BIO tag per word")
     entities: Dict[str, List[str]] = Field(
         default_factory=dict,
-        description="Grouped entities extracted from BIO tags",
+        description="Original entities extracted from BIO tags",
     )
+    entities_normalized: Optional[Dict[str, List[str] | str | None]] = Field(
+        None,
+        description="Normalised entities map: list values for non-period keys; period as string (latest/point) or 2-item list for range",
+    )
+
+
+# ── Top-level responses ──────────────────────────────────────
+
+
+class PredictResponse(BaseModel):
+    """Unified prediction output: routing + interpretation for one text."""
+
+    text: str
+    routing: Optional[RoutingResponse] = Field(
+        None,
+        description="Routing decisions (null if router is disabled or not loaded)",
+    )
+    interpretation: InterpretationResponse
 
 
 class BatchPredictResponse(BaseModel):
@@ -79,6 +100,7 @@ class BatchPredictResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str = "ok"
     model_loaded: bool
+    router_loaded: bool = False
     device: Optional[str] = None
     model_source: Optional[str] = None
 

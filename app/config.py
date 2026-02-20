@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     max_seq_len: int = 64
     device: str = "auto"  # auto | cpu | cuda | mps
 
+    # ── Router model ──────────────────────────────────────────
+    router_enabled: bool = True
+    router_embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2"
+    router_hf_repo_id: str = "smenaaliaga/pibert-router"
+    router_hf_token: str | None = None
+
     # ── Server ────────────────────────────────────────────────
     app_host: str = "0.0.0.0"
     app_port: int = 8000

@@ -16,6 +16,7 @@ from app.api.routes import router
 from app.config import settings
 from app.logging_config import setup_logging
 from app.model.loader import bundle
+from app.model.router import router_bundle
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +33,20 @@ async def lifespan(app: FastAPI):
         settings.model_source.value,
         settings.device,
     )
+
+    # JointBERT – required
     bundle.load()
-    logger.info("Model ready – accepting requests")
+    logger.info("JointBERT model ready")
+
+    # Router – optional (failure does not block the service)
+    if settings.router_enabled:
+        try:
+            router_bundle.load()
+            logger.info("Router model ready")
+        except Exception:
+            logger.exception("Router model failed to load – routing will be disabled")
+
+    logger.info("All models loaded – accepting requests")
     yield
     logger.info("Shutting down PIBot Serving")
 
@@ -46,11 +59,11 @@ def create_app() -> FastAPI:
         title="PIBot Serving API",
         description=(
             "Inference endpoint for **PIBert** — a Joint BERT model for intent "
-            "classification (calc_mode, activity, region, investment, req_form) "
-            "and slot filling (NER) on macroeconomic queries in Spanish.\n\n"
+            "classification and slot filling, plus lightweight routing classifiers "
+            "for LangGraph integration.\n\n"
             "Built with FastAPI · Powered by HuggingFace Transformers"
         ),
-        version="1.0.0",
+        version="1.1.0",
         lifespan=lifespan,
         docs_url="/docs",
         redoc_url="/redoc",

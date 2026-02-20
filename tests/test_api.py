@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-# ── Fake bundle for tests ────────────────────────────────────
+# ── Fake bundles for tests ────────────────────────────────────
 
 _FAKE_LABELS = {
     "calc_mode": ["variacion", "nivel", "promedio"],
@@ -36,8 +36,33 @@ _FAKE_PREDICT_RESULT = {
     "investment_confidence": 0.91,
     "req_form": "valor",
     "req_form_confidence": 0.97,
-    "slot_tags": ["O", "O", "O", "B-period", "B-indicator"],
-    "entities": {"period": ["ultimo"], "indicator": ["imacec"]},
+    "slot_tags": ["O", "O", "O", "B-PERIOD", "B-INDICATOR"],
+    "entities": {"PERIOD": ["ultimo"], "INDICATOR": ["imacec"]},
+}
+
+_FAKE_ROUTE_RESULT = {
+    "macro": 1,
+    "macro_confidence": 0.97,
+    "intent": "value",
+    "intent_confidence": 0.94,
+    "context": "standalone",
+    "context_confidence": 0.89,
+}
+
+_FAKE_NORMALIZE_RESULT = {
+    "indicator": ["imacec"],
+    "seasonality": ["nsa"],
+    "frequency": [],
+    "activity": [],
+    "region": [],
+    "investment": [],
+    "period": ["20-02-2026", "21-02-2026"],
+}
+
+_FAKE_ROUTER_LABELS = {
+    "macro": [1, 0],
+    "intent": ["value", "method", "other"],
+    "context": ["standalone", "followup"],
 }
 
 
@@ -50,14 +75,27 @@ def _make_fake_bundle():
     return b
 
 
+def _make_fake_router_bundle():
+    """Create a mock RouterBundle that looks loaded."""
+    b = MagicMock()
+    b.is_loaded = True
+    b.labels = _FAKE_ROUTER_LABELS
+    return b
+
+
 @pytest.fixture()
 def mock_bundle():
-    """Patch the global bundle + predict function for HTTP tests."""
+    """Patch the global bundles + predict/route functions for HTTP tests."""
     fake = _make_fake_bundle()
+    fake_router = _make_fake_router_bundle()
     with (
         patch("app.api.routes.bundle", fake),
         patch("app.api.routes.predict", return_value=_FAKE_PREDICT_RESULT),
+        patch("app.api.routes.router_bundle", fake_router),
+        patch("app.api.routes.route", return_value=_FAKE_ROUTE_RESULT),
+        patch("app.api.routes.normalize_entities", return_value=_FAKE_NORMALIZE_RESULT),
         patch("app.model.loader.bundle", fake),
+        patch("app.model.router.router_bundle", fake_router),
     ):
         yield fake
 
@@ -94,6 +132,7 @@ async def test_health(client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["model_loaded"] is True
+    assert body["router_loaded"] is True
     assert body["status"] == "ok"
 
 
@@ -103,10 +142,33 @@ async def test_predict_single(client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["text"] == "cual fue el ultimo imacec"
-    assert "calc_mode" in body
-    assert body["calc_mode"]["label"] == "variacion"
-    assert 0 <= body["calc_mode"]["confidence"] <= 1
-    assert isinstance(body["entities"], dict)
+
+    # Routing block
+    assert "routing" in body
+    routing = body["routing"]
+    assert routing["macro"]["label"] == 1
+    assert 0 <= routing["macro"]["confidence"] <= 1
+    assert routing["intent"]["label"] == "value"
+    assert routing["context"]["label"] == "standalone"
+
+    # Interpretation block
+    assert "interpretation" in body
+    interp = body["interpretation"]
+    assert interp["intents"]["calc_mode"]["label"] == "variacion"
+    assert 0 <= interp["intents"]["calc_mode"]["confidence"] <= 1
+    assert isinstance(interp["entities"], dict)
+    assert isinstance(interp["slot_tags"], list)
+    assert interp["words"] == ["cual", "fue", "el", "ultimo", "imacec"]
+    assert interp["entities"] == {"period": ["ultimo"], "indicator": ["imacec"]}
+    assert interp["slot_tags"] == ["O", "O", "O", "B-period", "B-indicator"]
+
+    # Normalized entities map
+    assert "entities_normalized" in interp
+    entities_map = interp["entities_normalized"]
+    assert entities_map["indicator"] == ["imacec"]
+    assert entities_map["seasonality"] == ["nsa"]
+    assert entities_map["period"] == ["20-02-2026", "21-02-2026"]
+    assert entities_map["frequency"] == []
 
 
 @pytest.mark.asyncio
@@ -115,6 +177,9 @@ async def test_predict_batch(client):
     assert resp.status_code == 200
     body = resp.json()
     assert len(body["predictions"]) == 2
+    for pred in body["predictions"]:
+        assert "routing" in pred
+        assert "interpretation" in pred
 
 
 @pytest.mark.asyncio
@@ -130,3 +195,13 @@ async def test_labels(client):
     body = resp.json()
     assert "calc_mode" in body
     assert "slot" in body
+
+
+@pytest.mark.asyncio
+async def test_router_labels(client):
+    resp = await client.get("/router/labels")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "macro" in body
+    assert "intent" in body
+    assert "context" in body
