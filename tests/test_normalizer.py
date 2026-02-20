@@ -19,8 +19,14 @@ def test_period_latest_fallback_to_today_when_missing_period_entity():
     )
 
     now = datetime.now()
-    expected_today = f"01-{now.month:02d}-{now.year}"
-    assert result["period"] == expected_today
+    month_start = f"{now.year:04d}-{now.month:02d}-01"
+    if now.month == 12:
+        next_month = datetime(now.year + 1, 1, 1)
+    else:
+        next_month = datetime(now.year, now.month + 1, 1)
+    last_day = (next_month - datetime.resolution).day
+    month_end = f"{now.year:04d}-{now.month:02d}-{last_day:02d}"
+    assert result["period"] == [month_start, month_end]
 
 
 def test_period_range_returns_tuple_string():
@@ -30,7 +36,7 @@ def test_period_range_returns_tuple_string():
         req_form="range",
     )
 
-    assert result["period"] == ["01-02-2024", "31-03-2024"]
+    assert result["period"] == ["2024-02-01", "2024-03-31"]
 
 
 def test_period_range_with_two_years_uses_correct_bounds():
@@ -40,7 +46,7 @@ def test_period_range_with_two_years_uses_correct_bounds():
         req_form="range",
     )
 
-    assert result["period"] == ["01-03-2023", "31-01-2024"]
+    assert result["period"] == ["2023-03-01", "2024-01-31"]
 
 
 def test_period_range_disordered_same_year_is_sorted_ascending():
@@ -50,7 +56,7 @@ def test_period_range_disordered_same_year_is_sorted_ascending():
         req_form="range",
     )
 
-    assert result["period"] == ["01-01-2023", "31-05-2023"]
+    assert result["period"] == ["2023-01-01", "2023-05-31"]
 
 
 def test_activity_negative_phrase_prefers_no_mineria():
@@ -104,7 +110,7 @@ def test_period_without_year_assumes_current_year():
     normalized, failed = normalize_period("enero")
     current_year = datetime.now().year
 
-    assert normalized == f"01-01-{current_year}"
+    assert normalized == f"{current_year:04d}-01-01"
     assert failed == []
 
 
@@ -116,7 +122,7 @@ def test_period_range_without_year_assumes_current_year():
     )
     current_year = datetime.now().year
 
-    assert result["period"] == [f"01-01-{current_year}", f"31-05-{current_year}"]
+    assert result["period"] == [f"{current_year:04d}-01-01", f"{current_year:04d}-05-31"]
 
 
 def test_activity_conjunction_is_split_and_normalized():
@@ -209,7 +215,7 @@ def test_quarter_period_range_text_returns_quarter_boundaries():
         req_form="range",
     )
 
-    assert result["period"] == ["01-01-2024", "31-12-2024"]
+    assert result["period"] == ["2024-01-01", "2024-12-31"]
 
 
 def test_frequency_q_snaps_period_to_quarter_start():
@@ -224,7 +230,7 @@ def test_frequency_q_snaps_period_to_quarter_start():
     )
 
     assert result["frequency"] == ["q"]
-    assert result["period"] == "01-01-2024"
+    assert result["period"] == ["2024-01-01", "2024-03-31"]
 
 
 def test_quarter_range_uses_last_day_on_upper_bound():
@@ -237,7 +243,7 @@ def test_quarter_range_uses_last_day_on_upper_bound():
         req_form="range",
     )
 
-    assert result["period"] == ["01-01-2024", "30-09-2024"]
+    assert result["period"] == ["2024-01-01", "2024-09-30"]
 
 
 def test_year_only_range_uses_last_day_of_year_on_upper_bound():
@@ -250,7 +256,7 @@ def test_year_only_range_uses_last_day_of_year_on_upper_bound():
         req_form="range",
     )
 
-    assert result["period"] == ["01-01-2024", "31-12-2024"]
+    assert result["period"] == ["2024-01-01", "2024-12-31"]
 
 
 def test_explicit_imacec_without_frequency_infers_monthly_frequency():
@@ -264,3 +270,63 @@ def test_explicit_imacec_without_frequency_infers_monthly_frequency():
     )
 
     assert result["frequency"] == ["m"]
+
+
+def test_generic_indicator_with_region_intent_and_entity_infers_pib_q():
+    result = normalize_entities(
+        entities={
+            "indicator": ["economia"],
+            "region": ["chile"],
+        },
+        calc_mode="original",
+        req_form="point",
+        intents={"region": "specific", "investment": "none"},
+    )
+
+    assert result["indicator"] == ["pib"]
+    assert result["frequency"] == ["q"]
+
+
+def test_generic_indicator_with_investment_intent_and_entity_infers_pib_q():
+    result = normalize_entities(
+        entities={
+            "indicator": ["economia"],
+            "investment": ["inversion"],
+        },
+        calc_mode="original",
+        req_form="point",
+        intents={"region": "none", "investment": "specific"},
+    )
+
+    assert result["indicator"] == ["pib"]
+    assert result["frequency"] == ["q"]
+
+
+def test_generic_indicator_with_region_intent_without_entity_still_infers_pib_q():
+    result = normalize_entities(
+        entities={
+            "indicator": ["economia"],
+        },
+        calc_mode="original",
+        req_form="point",
+        intents={"region": "specific", "investment": "none"},
+    )
+
+    assert result["indicator"] == ["pib"]
+    assert result["frequency"] == ["q"]
+
+
+def test_pib_point_with_year_only_period_forces_annual_frequency():
+    result = normalize_entities(
+        entities={
+            "activity": ["mineria"],
+            "period": ["año 2023"],
+        },
+        calc_mode="contribution",
+        req_form="point",
+        intents={"region": "general", "investment": "none"},
+    )
+
+    assert result["indicator"] == ["pib"]
+    assert result["frequency"] == ["a"]
+    assert result["period"] == ["2023-01-01", "2023-12-31"]

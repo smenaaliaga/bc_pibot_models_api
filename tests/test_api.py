@@ -56,7 +56,7 @@ _FAKE_NORMALIZE_RESULT = {
     "activity": [],
     "region": [],
     "investment": [],
-    "period": ["20-02-2026", "21-02-2026"],
+    "period": ["2026-02-01", "2026-02-28"],
 }
 
 _FAKE_ROUTER_LABELS = {
@@ -167,7 +167,7 @@ async def test_predict_single(client):
     entities_map = interp["entities_normalized"]
     assert entities_map["indicator"] == ["imacec"]
     assert entities_map["seasonality"] == ["nsa"]
-    assert entities_map["period"] == ["20-02-2026", "21-02-2026"]
+    assert entities_map["period"] == ["2026-02-01", "2026-02-28"]
     assert entities_map["frequency"] == []
 
 

@@ -99,6 +99,10 @@ def _build_interpretation(raw: dict) -> InterpretationResponse:
             entities=canonical_entities,
             calc_mode=raw.get("calc_mode"),
             req_form=raw.get("req_form"),
+            intents={
+                "region": raw.get("region"),
+                "investment": raw.get("investment"),
+            },
         )
     except Exception:
         logger.warning("Entity normalisation failed", exc_info=True)

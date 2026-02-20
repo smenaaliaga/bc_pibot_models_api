@@ -201,7 +201,7 @@ Retorna estado del modelo, estado del router y dispositivo.
       "activity": ["no_mineria"],
       "region": [],
       "investment": [],
-      "period": ["01-05-2025", "01-08-2025"]
+      "period": ["2025-05-01", "2025-08-31"]
     }
   }
 }
@@ -215,11 +215,9 @@ Retorna estado del modelo, estado del router y dispositivo.
 
 - Las claves son fijas: `indicator`, `seasonality`, `frequency`, `activity`, `region`, `investment`, `period`.
 - Los valores son `list[string]` para todas las claves excepto `period`.
-- `period` se normaliza a **DD-MM-YYYY**.
+- `period` se normaliza a **YYYY-MM-DD**.
 - `period` según `req_form`:
-  - `latest` → última fecha disponible (string)
-  - `point` → fecha mencionada (string)
-  - `range` → lista de 2 elementos `[fecha_menor, fecha_mayor]`
+  - `latest`, `point` y `range` → lista de 2 elementos `[fecha_inicio, fecha_fin]`
 - Los errores de normalización no rompen la request: la API devuelve predicción y `entities_normalized: null`.
 
 ### Valores posibles por campo
@@ -253,8 +251,7 @@ Estos campos retornan **un único valor** por predicción:
 - `entities_normalized.investment`: `[]` o una clave normalizada:
   - `demanda_interna | consumo | consumo_gobierno | inversion | inversion_fijo | existencia | exportacion | importacion | ahorro_externo | ahorro_interno`
 - `entities_normalized.period`:
-  - `latest` o `point`: string `"DD-MM-YYYY"`
-  - `range`: lista `["DD-MM-YYYY", "DD-MM-YYYY"]` (ordenada menor→mayor)
+  - `latest`, `point` y `range`: lista `["YYYY-MM-DD", "YYYY-MM-DD"]`
 
 ### `POST /predict/batch`
 

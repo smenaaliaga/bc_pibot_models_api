@@ -68,9 +68,9 @@ class InterpretationResponse(BaseModel):
         default_factory=dict,
         description="Original entities extracted from BIO tags",
     )
-    entities_normalized: Optional[Dict[str, List[str] | str | None]] = Field(
+    entities_normalized: Optional[Dict[str, List[str] | None]] = Field(
         None,
-        description="Normalised entities map: list values for non-period keys; period as string (latest/point) or 2-item list for range",
+        description="Normalised entities map: list values for all keys; period always as 2-item list [start, end]",
     )
 
 
