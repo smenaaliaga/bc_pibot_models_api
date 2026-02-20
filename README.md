@@ -1,55 +1,55 @@
 # PIBot Serving
 
-Production-ready **FastAPI** endpoint for the PIBot JointBERT model + lightweight routing classifiers.  
-Serves multi-head intent classification + BIO slot filling for macroeconomic queries in Spanish,
-plus routing decisions for LangGraph integration.
+Endpoint **FastAPI** para producción para el modelo JointBERT de PIBot + clasificadores ligeros de routing.  
+
+Entrega clasificación de decisiones de routing e intención multi-head + slot filling BIO para consultas macroeconómicas en español.
 
 ---
 
-## Features
+## Características
 
-- **Unified inference** (`POST /predict`, `POST /predict/batch`)
-- **Routing classifiers** – sentence embeddings + 3 logistic regressions for LangGraph node routing
-- **JointBERT interpretation** – 5-head intent classification + BIO slot filling (NER)
-- **Entity normalizer** – fuzzy matching + inference rules for `indicator`, `seasonality`, `frequency`, `activity`, `region`, `investment`, `period`
-- **Dual entities output** – original extracted entities + normalized entities in the same response
-- **Model from HF Hub or local** – controlled via `MODEL_SOURCE` env var
-- **Docker-ready** – multi-stage build (CPU & GPU variants)
-- **Prometheus metrics** at `/metrics`
-- **Structured JSON logging** (structlog)
-- **OpenAPI docs** auto-generated (`/docs`, `/redoc`)
-- **Healthcheck** endpoint (`/health`)
+- **Inferencia unificada** (`POST /predict`, `POST /predict/batch`)
+- **Clasificadores de routing** – sentence embeddings + 3 regresiones logísticas para routing de nodos en LangGraph
+- **Interpretación JointBERT** – clasificación de intención de 5 cabezas + slot filling BIO (NER)
+- **Normalizador de entidades** – fuzzy matching + reglas de inferencia para `indicator`, `seasonality`, `frequency`, `activity`, `region`, `investment`, `period`
+- **Salida dual de entidades** – entidades originales extraídas + entidades normalizadas en la misma respuesta
+- **Modelo desde HF Hub o local** – controlado por la variable `MODEL_SOURCE`
+- **Listo para Docker** – build multi-stage (CPU y GPU)
+- **Métricas Prometheus** en `/metrics`
+- **Logging JSON estructurado** (structlog)
+- **Documentación OpenAPI** autogenerada (`/docs`, `/redoc`)
+- **Endpoint de healthcheck** (`/health`)
 - **CORS** configurable
-- **Non-root container** user for security
+- **Usuario no-root** en contenedor para seguridad
 
 ---
 
-## Project structure
+## Estructura del proyecto
 
 ```text
 bc_pibert_endpoint/
 ├── app/
 │   ├── __init__.py
-│   ├── main.py                # ASGI entrypoint (uvicorn app.main:app)
-│   ├── config.py              # pydantic-settings (env vars / .env)
-│   ├── logging_config.py      # Structured logging setup
+│   ├── main.py                # Punto de entrada ASGI (uvicorn app.main:app)
+│   ├── config.py              # pydantic-settings (variables de entorno / .env)
+│   ├── logging_config.py      # Configuración de logging estructurado
 │   ├── api/
 │   │   ├── __init__.py
 │   │   ├── routes.py          # /predict, /predict/batch, /health, /labels, /router/labels
-│   │   └── schemas.py         # Pydantic request/response models
+│   │   └── schemas.py         # Modelos Pydantic de request/response
 │   └── model/
 │       ├── __init__.py
-│       ├── loader.py          # Download from HF or load local, init JointBERT
+│       ├── loader.py          # Descarga desde HF o carga local, inicializa JointBERT
 │       ├── predictor.py       # Tokenize → forward → decode (JointBERT)
-│       ├── normalizer.py      # Entities normalization (fuzzy + inference)
-│       └── router.py          # Sentence embeddings + sklearn classifiers (routing)
+│       ├── normalizer.py      # Normalización de entidades (fuzzy + inferencia)
+│       └── router.py          # Sentence embeddings + clasificadores sklearn (routing)
 ├── tests/
-│   ├── test_api.py            # HTTP endpoint tests (mocked models)
-│   └── test_predictor.py      # Unit tests for BIO extraction
+│   ├── test_api.py            # Tests HTTP de endpoints (modelos mockeados)
+│   └── test_predictor.py      # Tests unitarios de extracción BIO
 ├── scripts/
-│   └── healthcheck.py         # Docker HEALTHCHECK script
-├── Dockerfile                 # CPU multi-stage build
-├── Dockerfile.gpu             # GPU (CUDA 12.1) multi-stage build
+│   └── healthcheck.py         # Script Docker HEALTHCHECK
+├── Dockerfile                 # Build multi-stage CPU
+├── Dockerfile.gpu             # Build multi-stage GPU (CUDA 12.1)
 ├── docker-compose.yml
 ├── .dockerignore
 ├── .env.example
@@ -57,15 +57,15 @@ bc_pibert_endpoint/
 ├── requirements.txt
 ├── requirements-dev.txt
 ├── pyproject.toml
-├── INTEGRATION.md             # Guide for wiring real routing models
+├── INTEGRATION.md             # Guía para conectar modelos reales de routing
 └── README.md
 ```
 
 ---
 
-## Quick start (local)
+## Inicio rápido (local)
 
-### 1) Create virtual environment
+### 1) Crear entorno virtual
 
 ```bash
 python -m venv .venv
@@ -79,39 +79,39 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2) Configure
+### 2) Configurar
 
 ```bash
 cp .env.example .env
-# Edit .env with your HF repo or local model path
+# Edita .env con tu repo de HF o ruta local del modelo
 ```
 
-Key variables:
+Variables clave:
 
-| Variable | Description | Default |
+| Variable | Descripción | Valor por defecto |
 |---|---|---|
-| `MODEL_SOURCE` | `huggingface` or `local` | `huggingface` |
-| `HF_REPO_ID` | HF repo (e.g. `smenaaliaga/pibert`) | `smenaaliaga/pibert` |
-| `HF_TOKEN` | HF token (only for private repos) | — |
-| `MODEL_LOCAL_DIR` | Absolute path to local model dir | — |
-| `MAX_SEQ_LEN` | Max input sequence length | `64` |
+| `MODEL_SOURCE` | `huggingface` o `local` | `huggingface` |
+| `HF_REPO_ID` | Repo de HF (ej. `smenaaliaga/pibert`) | `smenaaliaga/pibert` |
+| `HF_TOKEN` | Token de HF (solo repos privados) | — |
+| `MODEL_LOCAL_DIR` | Ruta absoluta al directorio local del modelo | — |
+| `MAX_SEQ_LEN` | Longitud máxima de secuencia de entrada | `64` |
 | `DEVICE` | `auto`, `cpu`, `cuda`, `mps` | `auto` |
-| `ROUTER_ENABLED` | Enable routing classifiers | `true` |
-| `ROUTER_EMBEDDING_MODEL` | sentence-transformers model name | `paraphrase-multilingual-MiniLM-L12-v2` |
-| `ROUTER_HF_REPO_ID` | HF repo with `.joblib` classifiers | `smenaaliaga/pibert-router` |
-| `ROUTER_HF_TOKEN` | HF token for router repo (private only) | — |
-| `APP_PORT` | Server port | `8000` |
+| `ROUTER_ENABLED` | Habilita clasificadores de routing | `true` |
+| `ROUTER_EMBEDDING_MODEL` | Nombre del modelo sentence-transformers | `paraphrase-multilingual-MiniLM-L12-v2` |
+| `ROUTER_HF_REPO_ID` | Repo de HF con clasificadores `.joblib` | `smenaaliaga/pibert-router` |
+| `ROUTER_HF_TOKEN` | Token de HF para repo de router (solo privado) | — |
+| `APP_PORT` | Puerto del servidor | `8000` |
 | `LOG_LEVEL` | `debug`, `info`, `warning`, `error` | `info` |
-| `ENABLE_METRICS` | Expose `/metrics` (Prometheus) | `true` |
-| `CORS_ORIGINS` | JSON array of allowed origins | `["*"]` |
+| `ENABLE_METRICS` | Expone `/metrics` (Prometheus) | `true` |
+| `CORS_ORIGINS` | Arreglo JSON de orígenes permitidos | `["*"]` |
 
-### 3) Run
+### 3) Ejecutar
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
-Server starts at `http://localhost:8000`. Interactive docs at `http://localhost:8000/docs`.
+El servidor inicia en `http://localhost:8000`. Documentación interactiva en `http://localhost:8000/docs`.
 
 ---
 
@@ -125,16 +125,16 @@ docker compose up --build
 
 ### GPU
 
-Edit `docker-compose.yml` to uncomment the GPU service, or build directly:
+Edita `docker-compose.yml` para descomentar el servicio GPU, o construye directamente:
 
 ```bash
 docker build -f Dockerfile.gpu -t pibert-serving-gpu .
 docker run --gpus all -p 8000:8000 --env-file .env pibert-serving-gpu
 ```
 
-### With local model (no HF download)
+### Con modelo local (sin descarga desde HF)
 
-Mount the model directory at container startup:
+Monta el directorio del modelo al iniciar el contenedor:
 
 ```bash
 docker run -p 8000:8000 \
@@ -146,11 +146,11 @@ docker run -p 8000:8000 \
 
 ---
 
-## API Reference
+## Referencia de API
 
 ### `GET /health`
 
-Returns model status, router status, and device.
+Retorna estado del modelo, estado del router y dispositivo.
 
 ```json
 {
@@ -167,60 +167,94 @@ Returns model status, router status, and device.
 **Request:**
 ```json
 {
-  "text": "cual fue la ultima cifra del imacec"
+  "text": "cuanto crecio el sector no minerio entre mayo y agosto del 2025"
 }
 ```
 
 **Response:**
 ```json
 {
-  "text": "cual fue el imacec de junio 2025",
+  "text": "cuanto crecio el sector no minerio entre mayo y agosto del 2025",
   "routing": {
     "macro": { "label": 1, "confidence": 0.97 },
     "intent": { "label": "value", "confidence": 0.94 },
     "context": { "label": "standalone", "confidence": 0.89 }
   },
   "interpretation": {
-    "words": ["cual", "fue", "el", "imacec", "de", "junio", "2025"],
+    "words": ["cuanto", "crecio", "el", "sector", "no", "minerio", "entre", "mayo", "y", "agosto", "del", "2025"],
     "intents": {
-      "calc_mode": { "label": "variacion", "confidence": 0.92 },
-      "activity": { "label": "total", "confidence": 0.88 },
-      "region": { "label": "nacional", "confidence": 0.95 },
-      "investment": { "label": "total", "confidence": 0.91 },
-      "req_form": { "label": "valor", "confidence": 0.97 }
+      "calc_mode": { "label": "yoy", "confidence": 0.99 },
+      "activity": { "label": "specific", "confidence": 0.99 },
+      "region": { "label": "none", "confidence": 0.99 },
+      "investment": { "label": "none", "confidence": 0.99 },
+      "req_form": { "label": "range", "confidence": 0.99 }
     },
-    "slot_tags": ["O", "O", "O", "B-indicator", "O", "B-period", "I-period"],
+    "slot_tags": ["O", "O", "O", "O", "B-activity", "I-activity", "B-period", "I-period", "I-period", "I-period", "I-period", "I-period"],
     "entities": {
-      "period": ["junio 2025"],
-      "indicator": ["imacec"]
+      "activity": ["no minerio"],
+      "period": ["entre mayo y agosto del 2025"]
     },
     "entities_normalized": {
       "indicator": ["imacec"],
-      "seasonality": [],
-      "frequency": [],
-      "activity": [],
+      "seasonality": ["nsa"],
+      "frequency": ["m"],
+      "activity": ["no_mineria"],
       "region": [],
       "investment": [],
-      "period": "01-06-2025"
+      "period": ["01-05-2025", "01-08-2025"]
     }
   }
 }
 ```
 
-> **Note:** The `routing` field is `null` when `ROUTER_ENABLED=false` or the router fails to load.
-> The `entities_normalized` field is `null` when normalisation fails.
-> The response includes both `entities` (original extracted values) and `entities_normalized` (normalized key-value map).
+> **Nota:** El campo `routing` es `null` cuando `ROUTER_ENABLED=false` o cuando falla la carga del router.
+> El campo `entities_normalized` es `null` cuando falla la normalización.
+> La respuesta incluye ambos campos: `entities` (valores originales extraídos) y `entities_normalized` (mapa normalizado).
 
-### `interpretation.entities_normalized` details
+### Detalles de `interpretation.entities_normalized`
 
-- Keys are fixed: `indicator`, `seasonality`, `frequency`, `activity`, `region`, `investment`, `period`.
-- Values are `list[string]` for all keys except `period`.
-- `period` is normalized to **DD-MM-YYYY**.
-- `period` by `req_form`:
+- Las claves son fijas: `indicator`, `seasonality`, `frequency`, `activity`, `region`, `investment`, `period`.
+- Los valores son `list[string]` para todas las claves excepto `period`.
+- `period` se normaliza a **DD-MM-YYYY**.
+- `period` según `req_form`:
   - `latest` → última fecha disponible (string)
   - `point` → fecha mencionada (string)
   - `range` → lista de 2 elementos `[fecha_menor, fecha_mayor]`
-- Normalization errors do not fail the request: the API returns prediction data and `entities_normalized: null`.
+- Los errores de normalización no rompen la request: la API devuelve predicción y `entities_normalized: null`.
+
+### Valores posibles por campo
+
+#### `routing`
+
+- `routing.macro.label`: `1 | 0`
+- `routing.intent.label`: `"value" | "method" | "other"`
+- `routing.context.label`: `"standalone" | "followup"`
+
+#### `interpretation.intents` (clasificadores de etiqueta única)
+
+Estos campos retornan **un único valor** por predicción:
+
+- `interpretation.intents.calc_mode.label`: `"original" | "prev_period" | "yoy" | "contribution"`
+- `interpretation.intents.activity.label`: `"general" | "specific" | "none"`
+- `interpretation.intents.region.label`: `"general" | "specific" | "none"`
+- `interpretation.intents.investment.label`: `"general" | "specific" | "none"`
+- `interpretation.intents.req_form.label`: `"latest" | "point" | "range"`
+
+#### `entities_normalized`
+
+- `entities_normalized.indicator`: `["imacec"] | ["pib"]`
+- `entities_normalized.seasonality`: `["sa"] | ["nsa"]`
+- `entities_normalized.frequency`: `["m"] | ["q"] | ["a"]`
+- `entities_normalized.activity`: `[]` o alguna clave normalizada:
+  - IMACEC: `bienes | mineria | industria | resto_bienes | comercio | servicios | no_mineria | impuestos`
+  - PIB: `agropecuario | pesca | industria | electricidad | construccion | comercio | restaurantes | transporte | comunicaciones | servicio_financieros | servicios_empresariales | servicio_viviendas | servicio_personales | admin_publica | impuestos`
+- `entities_normalized.region`: `[]` o una clave de región:
+  - `arica_parinacota | tarapaca | antofagasta | atacama | coquimbo | valparaiso | metropolitana | ohiggins | maule | nuble | biobio | araucania | los_rios | los_lagos | aysen | magallanes`
+- `entities_normalized.investment`: `[]` o una clave normalizada:
+  - `demanda_interna | consumo | consumo_gobierno | inversion | inversion_fijo | existencia | exportacion | importacion | ahorro_externo | ahorro_interno`
+- `entities_normalized.period`:
+  - `latest` o `point`: string `"DD-MM-YYYY"`
+  - `range`: lista `["DD-MM-YYYY", "DD-MM-YYYY"]` (ordenada menor→mayor)
 
 ### `POST /predict/batch`
 
@@ -246,11 +280,11 @@ Returns model status, router status, and device.
 
 ### `GET /labels`
 
-Returns JointBERT label mappings loaded from the model.
+Retorna el mapeo de labels de JointBERT cargado desde el modelo.
 
 ### `GET /router/labels`
 
-Returns routing classifier label mappings.
+Retorna el mapeo de labels de los clasificadores de routing.
 
 ```json
 {
@@ -262,11 +296,11 @@ Returns routing classifier label mappings.
 
 ### `GET /metrics`
 
-Prometheus metrics (request count, latency histograms, etc).
+Métricas Prometheus (conteo de requests, histogramas de latencia, etc).
 
 ---
 
-## Usage examples
+## Ejemplos de uso
 
 ### cURL
 
@@ -311,74 +345,87 @@ response = httpx.post(
 )
 data = response.json()
 
-# Routing decisions for LangGraph
+# Decisiones de routing para LangGraph
 print(data["routing"]["macro"]["label"])      # 1
 print(data["routing"]["intent"]["label"])     # "value"
 
-# Interpretation for series lookup
+# Interpretación para consulta de series
 print(data["interpretation"]["entities"])            # valores originales extraídos
 print(data["interpretation"]["entities_normalized"]) # valores normalizados
 ```
 
 ### Swagger UI
 
-Open `http://localhost:8000/docs` in your browser to test endpoints interactively.
+Abre `http://localhost:8000/docs` en tu navegador para probar endpoints de forma interactiva.
+
+### Chat interactivo (`tests/endpoint_chat.py`)
+
+Este script permite enviar múltiples consultas al endpoint `/predict` en modo chat y ver la respuesta formateada.
+
+Uso:
+
+```bash
+python tests/endpoint_chat.py
+python tests/endpoint_chat.py --url http://localhost:8000
+```
+
+Requisito: el servidor debe estar encendido (por ejemplo, `uvicorn app.main:app --reload`).
 
 ---
 
-## Integrating the real routing models
+## Integrar modelos reales de routing
 
-The router currently returns **dummy predictions**. To wire up real
-sentence-transformer + scikit-learn classifiers, follow the step-by-step
-guide in **[INTEGRATION.md](INTEGRATION.md)**.
+El router actualmente retorna **predicciones dummy**. Para conectar modelos
+reales de sentence-transformer + clasificadores scikit-learn, sigue la guía
+paso a paso en **[INTEGRATION.md](INTEGRATION.md)**.
 
 ---
 
-## Tests
+## Pruebas
 
 ```bash
 pip install -r requirements-dev.txt
 pytest -v
 ```
 
-Tests use mocked model bundles – no real weights needed.
+Las pruebas usan bundles de modelo mockeados: no se requieren pesos reales.
 
 ---
 
-## Deployment patterns
+## Patrones de despliegue
 
 ### Azure Container Apps / App Service
 
-1. Build & push image to ACR:
+1. Construye y publica la imagen en ACR:
    ```bash
    az acr build --registry <acr-name> --image pibert-serving:latest .
    ```
-2. Deploy as Container App with env vars from `.env`.
+2. Despliega como Container App con variables de entorno desde `.env`.
 
 ### Kubernetes
 
-Use the Docker image + a `ConfigMap` / `Secret` for env vars.  
-Set `APP_WORKERS=1` when using GPU (model is not fork-safe).
+Usa la imagen Docker + un `ConfigMap` / `Secret` para variables de entorno.  
+Define `APP_WORKERS=1` al usar GPU (el modelo no es fork-safe).
 
 ### Azure ML Managed Endpoint
 
-See the `azureml_endpoint_project/` in the parent repo for YAML-based deployment.
+Consulta `azureml_endpoint_project/` en el repo padre para despliegue basado en YAML.
 
 ---
 
-## Architecture decisions
+## Decisiones de arquitectura
 
-| Decision | Rationale |
+| Decisión | Justificación |
 |---|---|
-| **FastAPI + uvicorn** | Async ASGI, auto-generated OpenAPI, production-proven |
-| **pydantic-settings** | Type-safe config from env vars with validation |
-| **Lifespan events** | Models load once at startup, not per-request |
-| **Singleton ModelBundle + RouterBundle** | Single models in memory; 1 worker for GPU safety |
-| **Graceful router loading** | Router failure doesn't block JointBERT; returns `routing: null` |
-| **Unified response format** | `routing` + `interpretation` in one response for LangGraph |
-| **Dummy routing mode** | Endpoint works before real classifiers are trained |
-| **Multi-stage Docker** | Small image (~1.5 GB CPU); deps cached in builder layer |
-| **structlog JSON** | Machine-readable logs for ELK / Loki / CloudWatch |
-| **Prometheus instrumentator** | Zero-config request metrics with histograms |
-| **Docker HEALTHCHECK** | Container orchestrators (Compose, K8s) detect readiness |
-| **Non-root user** | Security best practice for production containers |
+| **FastAPI + uvicorn** | ASGI asíncrono, OpenAPI autogenerado, probado en producción |
+| **pydantic-settings** | Configuración type-safe desde variables de entorno con validación |
+| **Eventos de lifespan** | Los modelos cargan una vez al inicio, no por request |
+| **Singleton ModelBundle + RouterBundle** | Modelos únicos en memoria; 1 worker por seguridad en GPU |
+| **Carga tolerante del router** | Fallos del router no bloquean JointBERT; retorna `routing: null` |
+| **Formato de respuesta unificado** | `routing` + `interpretation` en una sola respuesta para LangGraph |
+| **Modo dummy de routing** | El endpoint funciona antes de entrenar clasificadores reales |
+| **Docker multi-stage** | Imagen más pequeña (~1.5 GB CPU); dependencias cacheadas en capa builder |
+| **structlog JSON** | Logs legibles por máquinas para ELK / Loki / CloudWatch |
+| **Instrumentación Prometheus** | Métricas de requests con histogramas sin configuración compleja |
+| **Docker HEALTHCHECK** | Orquestadores (Compose, K8s) detectan readiness |
+| **Usuario no-root** | Buena práctica de seguridad para contenedores en producción |
