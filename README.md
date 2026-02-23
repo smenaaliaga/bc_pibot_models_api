@@ -24,6 +24,12 @@ Entrega clasificación de decisiones de routing e intención multi-head + slot f
 
 ---
 
+## Documentación técnica
+
+- Reglas del normalizador y orden de aplicación: [docs/normalizer_rules.md](docs/normalizer_rules.md)
+
+---
+
 ## Estructura del proyecto
 
 ```text
