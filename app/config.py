@@ -40,8 +40,7 @@ class Settings(BaseSettings):
 
     # ── Router model ──────────────────────────────────────────
     router_enabled: bool = True
-    router_embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2"
-    router_hf_repo_id: str = "smenaaliaga/pibert-router"
+    router_hf_repo_id: str = "smenaaliaga/pibot-intent-router"
     router_hf_token: str | None = None
 
     # ── Server ────────────────────────────────────────────────

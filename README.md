@@ -1,6 +1,6 @@
 # PIBot Serving
 
-Endpoint **FastAPI** para producción para el modelo JointBERT de PIBot + clasificadores ligeros de routing.  
+Endpoint **FastAPI** para producción para el modelo JointBERT de PIBot + router multitarea real de intent/context/macro.  
 
 Entrega clasificación de decisiones de routing e intención multi-head + slot filling BIO para consultas macroeconómicas en español.
 
@@ -9,7 +9,7 @@ Entrega clasificación de decisiones de routing e intención multi-head + slot f
 ## Características
 
 - **Inferencia unificada** (`POST /predict`, `POST /predict/batch`)
-- **Clasificadores de routing** – sentence embeddings + 3 regresiones logísticas para routing de nodos en LangGraph
+- **Router multitarea real** – encoder `sentence-transformers` + cabezas `torch` (`macro`, `intent`, `context`) cargadas desde HF
 - **Interpretación JointBERT** – clasificación de intención de 5 cabezas + slot filling BIO (NER)
 - **Normalizador de entidades** – fuzzy matching + reglas de inferencia para `indicator`, `seasonality`, `frequency`, `activity`, `region`, `investment`, `period`
 - **Salida dual de entidades** – entidades originales extraídas + entidades normalizadas en la misma respuesta
@@ -42,7 +42,7 @@ bc_pibert_endpoint/
 │       ├── loader.py          # Descarga desde HF o carga local, inicializa JointBERT
 │       ├── predictor.py       # Tokenize → forward → decode (JointBERT)
 │       ├── normalizer.py      # Normalización de entidades (fuzzy + inferencia)
-│       └── router.py          # Sentence embeddings + clasificadores sklearn (routing)
+│       └── router.py          # Router multitarea HF (encoder + heads.pt)
 ├── tests/
 │   ├── test_api.py            # Tests HTTP de endpoints (modelos mockeados)
 │   └── test_predictor.py      # Tests unitarios de extracción BIO
@@ -97,8 +97,7 @@ Variables clave:
 | `MAX_SEQ_LEN` | Longitud máxima de secuencia de entrada | `64` |
 | `DEVICE` | `auto`, `cpu`, `cuda`, `mps` | `auto` |
 | `ROUTER_ENABLED` | Habilita clasificadores de routing | `true` |
-| `ROUTER_EMBEDDING_MODEL` | Nombre del modelo sentence-transformers | `paraphrase-multilingual-MiniLM-L12-v2` |
-| `ROUTER_HF_REPO_ID` | Repo de HF con clasificadores `.joblib` | `smenaaliaga/pibert-router` |
+| `ROUTER_HF_REPO_ID` | Repo de HF con artefactos `encoder/`, `heads.pt`, `id2label.json` | `smenaaliaga/pibot-intent-router` |
 | `ROUTER_HF_TOKEN` | Token de HF para repo de router (solo privado) | — |
 | `APP_PORT` | Puerto del servidor | `8000` |
 | `LOG_LEVEL` | `debug`, `info`, `warning`, `error` | `info` |
@@ -225,7 +224,7 @@ Retorna estado del modelo, estado del router y dispositivo.
 #### `routing`
 
 - `routing.macro.label`: `1 | 0`
-- `routing.intent.label`: `"value" | "method" | "other"`
+- `routing.intent.label`: `"value" | "methodology" | "other"`
 - `routing.context.label`: `"standalone" | "followup"`
 
 #### `interpretation.intents` (clasificadores de etiqueta única)
@@ -285,9 +284,9 @@ Retorna el mapeo de labels de los clasificadores de routing.
 
 ```json
 {
-  "macro": [1, 0],
-  "intent": ["value", "method", "other"],
-  "context": ["standalone", "followup"]
+  "macro": [0, 1],
+  "intent": ["methodology", "other", "value"],
+  "context": ["followup", "standalone"]
 }
 ```
 
@@ -370,11 +369,18 @@ Requisito: el servidor debe estar encendido (por ejemplo, `uvicorn app.main:app 
 
 ---
 
-## Integrar modelos reales de routing
+## Integración de routing
 
-El router actualmente retorna **predicciones dummy**. Para conectar modelos
-reales de sentence-transformer + clasificadores scikit-learn, sigue la guía
-paso a paso en **[INTEGRATION.md](INTEGRATION.md)**.
+El endpoint usa clasificación real de routing desde
+`smenaaliaga/pibot-intent-router` (HF Hub), cargando artefactos de inferencia:
+
+- `encoder/`
+- `heads.pt`
+- `id2label.json`
+- `label2id.json`
+- `train_config.json`
+
+Guía operativa y detalles de artefactos en **[INTEGRATION.md](INTEGRATION.md)**.
 
 ---
 
@@ -420,7 +426,7 @@ Consulta `azureml_endpoint_project/` en el repo padre para despliegue basado en 
 | **Singleton ModelBundle + RouterBundle** | Modelos únicos en memoria; 1 worker por seguridad en GPU |
 | **Carga tolerante del router** | Fallos del router no bloquean JointBERT; retorna `routing: null` |
 | **Formato de respuesta unificado** | `routing` + `interpretation` en una sola respuesta para LangGraph |
-| **Modo dummy de routing** | El endpoint funciona antes de entrenar clasificadores reales |
+| **Router real con fallback seguro** | Si falla la carga del router, el servicio sigue operativo con `routing: null` |
 | **Docker multi-stage** | Imagen más pequeña (~1.5 GB CPU); dependencias cacheadas en capa builder |
 | **structlog JSON** | Logs legibles por máquinas para ELK / Loki / CloudWatch |
 | **Instrumentación Prometheus** | Métricas de requests con histogramas sin configuración compleja |

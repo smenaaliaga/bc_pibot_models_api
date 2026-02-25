@@ -61,7 +61,7 @@ _FAKE_NORMALIZE_RESULT = {
 
 _FAKE_ROUTER_LABELS = {
     "macro": [1, 0],
-    "intent": ["value", "method", "other"],
+    "intent": ["value", "methodology", "other"],
     "context": ["standalone", "followup"],
 }
 
