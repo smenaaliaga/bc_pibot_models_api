@@ -110,6 +110,54 @@ def test_generic_indicator_with_quarterly_frequency_defaults_to_pib():
     assert result["indicator"] == ["pib"]
 
 
+def test_generic_indicator_with_quarter_period_defaults_to_pib_quarterly():
+    result = normalize_entities(
+        entities={"indicator": ["economia"], "period": ["primer trimestre 2024"]},
+        calc_mode="prev_period",
+        req_form="point",
+    )
+
+    assert result["indicator"] == ["pib"]
+    assert result["frequency"] == ["q"]
+    assert result["period"] == ["2024-01-01", "2024-03-31"]
+
+
+def test_generic_indicator_with_typo_trimester_period_defaults_to_pib_quarterly():
+    result = normalize_entities(
+        entities={"indicator": ["economia"], "period": ["primer trismestre 2024"]},
+        calc_mode="prev_period",
+        req_form="point",
+    )
+
+    assert result["indicator"] == ["pib"]
+    assert result["frequency"] == ["q"]
+    assert result["period"] == ["2024-01-01", "2024-03-31"]
+
+
+def test_point_infers_monthly_frequency_from_month_period_when_generic_indicator():
+    result = normalize_entities(
+        entities={"indicator": ["economia"], "period": ["junio del 2023"]},
+        calc_mode="original",
+        req_form="point",
+    )
+
+    assert result["indicator"] == ["imacec"]
+    assert result["frequency"] == ["m"]
+    assert result["period"] == ["2023-06-01", "2023-06-30"]
+
+
+def test_point_infers_annual_frequency_from_year_period_when_generic_indicator():
+    result = normalize_entities(
+        entities={"indicator": ["economia"], "period": ["2025"]},
+        calc_mode="original",
+        req_form="point",
+    )
+
+    assert result["indicator"] == ["pib"]
+    assert result["frequency"] == ["a"]
+    assert result["period"] == ["2025-01-01", "2025-12-31"]
+
+
 def test_period_without_year_assumes_current_year():
     normalized, failed = normalize_period("enero")
     current_year = datetime.now().year
@@ -355,6 +403,35 @@ def test_generic_indicator_with_specific_activity_intent_imacec_activity_infers_
         calc_mode="original",
         req_form="point",
         intents={"activity": "specific y", "region": "none", "investment": "none"},
+    )
+
+    assert result["indicator"] == ["imacec"]
+    assert result["frequency"] == ["m"]
+
+
+def test_generic_indicator_non_point_imacec_activity_with_none_context_infers_imacec_m():
+    result = normalize_entities(
+        entities={
+            "indicator": ["economia"],
+            "activity": ["resto de bienes"],
+        },
+        calc_mode="original",
+        req_form="range",
+        intents={"activity": "specific", "region": "none", "investment": "none"},
+    )
+
+    assert result["indicator"] == ["imacec"]
+    assert result["frequency"] == ["m"]
+
+
+def test_generic_indicator_non_point_without_imacec_coverage_infers_imacec_m():
+    result = normalize_entities(
+        entities={
+            "indicator": ["economia"],
+        },
+        calc_mode="original",
+        req_form="range",
+        intents={"activity": "none", "region": "none", "investment": "none"},
     )
 
     assert result["indicator"] == ["imacec"]

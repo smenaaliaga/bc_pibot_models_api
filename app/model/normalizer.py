@@ -12,108 +12,70 @@ Características:
 - Registro de entidades no reconocidas (failed matches)
 - Salida en formato JSON estructurado
 
-Reglas aplicadas:
-1) Normalización base de texto
-    - Se normaliza a minúsculas y sin acentos antes de comparar.
-    - Se usa fuzzy matching (`SequenceMatcher`) para tolerar variaciones/typos.
+Reglas aplicadas (orden de ejecución conceptual):
+1) Normalización base y fuzzy matching
+        - Todo texto se normaliza a minúsculas y sin acentos antes de comparar.
+        - Se utiliza matching fuzzy global para mapear al término más cercano del
+            vocabulario por entidad (`indicator`, `seasonality`, `frequency`,
+            `activity`, `region`, `investment`).
+        - Para términos con negación, se priorizan variantes negativas cuando el
+            texto contiene `no` (ej: `"no mineri"` -> `"no_mineria"`).
 
-2) Selección de clase por mejor coincidencia global
-    - No se usa la primera coincidencia por orden del diccionario.
-    - Se evalúan todos los términos del vocabulario de la entidad y se elige
-      la clave con mayor similitud fuzzy (si supera umbral).
-    - Esta regla aplica a `indicator`, `seasonality`, `frequency`, `activity`,
-      `region` e `investment`.
+2) Separación de entidades compuestas
+        - En `activity`, `region` e `investment`, expresiones con conjunción `y`
+            pueden separarse en subvalores antes de normalizar.
+        - Protección anti-sobre-splitting: si la frase completa ya matchea fuerte
+            contra el vocabulario, no se divide.
 
-3) Prioridad de negación
-    - Si el texto contiene token `no`, se priorizan términos negativos cuando
-      existan en el vocabulario (ej: `"no mineri"` -> `"no_mineria"`).
+3) Inferencia de `indicator` y `frequency`
+        - `indicator` se infiere desde `frequency` cuando viene vacío/genérico.
+        - Si `indicator` queda en `pib` sin frecuencia explícita -> `frequency=q`.
+        - Si `indicator` queda en `imacec` sin frecuencia explícita -> `frequency=m`.
+        - Regla crítica para indicador genérico (ej. `economia`) sin `frequency`:
+          a) Primero: si hay `frequency` explícita, se resuelve desde ahí
+              (`m` -> `imacec`, `q/a` -> `pib`).
+          b) Luego: si no hay `frequency` y `req_form=point`, se evalúa `period`
+              para inferir frecuencia:
+            - mes -> `m` (y `indicator=imacec`)
+            - trimestre (incluyendo typos) -> `q` (y `indicator=pib`)
+            - año solo -> `a` (y `indicator=pib`)
+          c) Si no se pudo inferir por `period` (o `req_form` no es `point`),
+              solo se asigna `imacec/m` cuando `activity` cae en cobertura IMACEC
+              y `intents.region` + `intents.investment` son `none`.
+          d) Si hay señales de PIB (contexto de `region`/`investment` o
+              cobertura de actividades PIB), se asigna `pib/q`.
+          e) Si no hay señales suficientes, fallback final `imacec/m`.
+        - Regla adicional: si `req_form=point`, `indicator=pib` y `period` es solo
+            año (sin mes/trimestre), la frecuencia se ajusta a `a`.
 
-4) Inferencias semánticas
-    - `indicator` se puede inferir según `frequency` (o default si falta contexto).
-    - `seasonality` se infiere desde `calc_mode` cuando no viene explícita.
-    - Precedencia de estacionalidad:
-        - Si `entities.seasonality` existe y normaliza a valor válido (`sa`/`nsa`),
-          se respeta ese valor explícito.
-        - Solo si falta o no matchea, se aplica inferencia por `calc_mode`.
-    - Si `seasonality` no viene o no matchea:
-        - `calc_mode=prev_period` → `sa`
-        - `calc_mode=yoy` → `nsa`
-        - cualquier otro caso (`original`, `contribution`, vacío, etc.) → `nsa`
-    - Si `frequency` no viene y `indicator` normalizado es `pib`, se asume `frequency=q`.
-    - Si `frequency` no viene y `indicator` normalizado es `imacec`, se asume `frequency=m`.
-        - Regla adicional PIB anual por período puntual:
-                - Si `entities_normalized.indicator = ["pib"]`, `req_form=point`
-                    y el `period` refiere a un año (sin mes/trimestre),
-                    entonces `entities_normalized.frequency = ["a"]`.
-    - Regla crítica de negocio:
-        - Si `entities.indicator` viene vacío o genérico (`economia`/similar)
-          y NO hay `frequency`, entonces:
-            `entities_normalized.indicator = ["imacec"]`
-            `entities_normalized.frequency = ["m"]`
-                - Regla previa por actividad específica:
-                        - Si además `intents.activity` es `"specific"` o
-                            `"specific y"` y existe
-                            `entities.activity`, se evalúa primero pertenencia de
-                            esas actividades:
-                                          1) Si todas matchean en `ACTIVITY_TERMS_IMACEC` →
-                                   `entities_normalized.indicator = ["imacec"]`
-                                   `entities_normalized.frequency = ["m"]`
-                                          2) Si no calzan todas en IMACEC, pero sí en
-                                              `ACTIVITY_TERMS_PIB` →
-                                   `entities_normalized.indicator = ["pib"]`
-                                   `entities_normalized.frequency = ["q"]`
-                                          3) Si hay mezcla/parciales, se prioriza el
-                                              vocabulario con mayor cobertura de matches;
-                                              en empate con matches se favorece IMACEC.
-                - Excepción a la regla anterior:
-                        - Si `entities.indicator` viene vacío o genérico, NO hay `frequency`,
-                            y `intents.region` o `intents.investment` es distinto de `none`,
-                            entonces:
-                                `entities_normalized.indicator = ["pib"]`
-                                `entities_normalized.frequency = ["q"]`
-                            (salvo que la frecuencia explícita sea `a`).
-        - Si `entities.indicator` viene vacío o genérico y la `frequency`
-          normalizada es `q` o `a`, entonces:
-            `entities_normalized.indicator = ["pib"]`
+4) Inferencia de `seasonality`
+        - Si existe `seasonality` explícita y matchea (`sa`/`nsa`), prevalece.
+        - Si no existe o no matchea:
+                - `calc_mode=prev_period` -> `sa`
+                - `calc_mode=yoy` -> `nsa`
+                - resto (`original`, `contribution`, vacío, etc.) -> `nsa`
 
-5) Regla de formato de fecha
-    - Toda fecha de `period` se entrega como `YYYY-MM-DD`.
+5) Resolución y formato de `period`
+        - Salida siempre en formato `YYYY-MM-DD`.
+        - `period` retorna siempre rango de 2 elementos `[inicio, fin]` para
+            `latest`, `point` y `range`.
+        - Contexto trimestral si `frequency=q` o el texto menciona trimestre
+            (incluyendo variantes con errores ortográficos).
+        - En contexto trimestral:
+                - Se prioriza extracción de trimestres explícitos.
+                - `point` devuelve inicio y fin de trimestre.
+                - `range` devuelve [inicio menor, fin mayor] a nivel trimestral.
+                - `latest` devuelve el trimestre inmediatamente anterior.
+        - Si el período es solo año, se expande al año completo
+            (`YYYY-01-01` a `YYYY-12-31`).
+        - Rangos invertidos se ordenan automáticamente menor -> mayor.
+        - Si faltan años explícitos en meses/trimestres, se usa contexto cercano o
+            año actual como fallback.
 
-6) Reglas por `req_form` para `period` en `entities_normalized`
-        - `latest`, `point` y `range`: siempre devuelve lista de 2 elementos
-            `[fecha_inicio, fecha_fin]`.
-                - `fecha_inicio`: primer día del período.
-                - `fecha_fin`: último día del período.
-                - Si el período es solo año (ej: "durante el 2024"), el rango cubre
-                    el año completo: `2024-01-01` a `2024-12-31`.
-        - Si `req_form=latest`, siempre entrega el período anterior al actual
-          según la frecuencia (mes, trimestre o año).
-
-7) Rangos desordenados
-    - Si el rango viene invertido en texto (ej. mayo→enero), se ordena automáticamente
-      en la salida a menor→mayor.
-
-8) Rangos con múltiples años
-    - En frases con más de un año, cada mes se empareja con su año contextual más cercano.
-    - Ejemplo: "entre marzo 2023 y enero 2024" → `["2023-03-01", "2024-01-01"]`.
-
-9) Contrato de salida API (`normalize_entities`)
-    - `indicator`, `seasonality`, `frequency`, `activity`, `region`, `investment`: listas.
-    - `period`: lista de 2 elementos en todos los casos.
-
-10) Separación de entidades compuestas por conjunción
-        - Para `activity`, `region` e `investment`, si un valor contiene "y"
-            se separa en subvalores y se normaliza cada uno.
-        - Protección anti-sobre-splitting: si la frase completa ya coincide
-            fuertemente con un término del vocabulario, NO se divide.
-
-11) Regla de período trimestral
-        - Si `frequency=q` o el texto de `period` menciona trimestres,
-            `entities_normalized.period` se entrega en formato trimestral
-            (`YYYY-MM-DD` con mes de inicio de trimestre: 01, 04, 07, 10).
-        - El límite superior se entrega como último día del trimestre final.
-        - Ejemplo: "del primer trimestre al cuarto trimestre del 2024"
-            → `["2024-01-01", "2024-12-31"]`.
+6) Contrato de salida de `normalize_entities`
+        - `indicator`, `seasonality`, `frequency`, `activity`, `region`,
+            `investment`: listas (vacías si no hay valor).
+        - `period`: lista de 2 fechas `[fecha_inicio, fecha_fin]`.
 
 Entidades soportadas:
   - INDICATOR: imacec, pib
@@ -1181,11 +1143,11 @@ def _extract_quarter_based_dates(text: str) -> List[str]:
             quarter_tokens.append((idx, int(compact_quarter.group(1))))
             continue
 
-        if token in quarter_word_map and idx + 1 < len(tokens) and tokens[idx + 1].startswith("trimestre"):
+        if token in quarter_word_map and idx + 1 < len(tokens) and _is_trimester_like_token(tokens[idx + 1]):
             quarter_tokens.append((idx, quarter_word_map[token]))
             continue
 
-        if token in {"1", "2", "3", "4"} and idx + 1 < len(tokens) and tokens[idx + 1].startswith("trimestre"):
+        if token in {"1", "2", "3", "4"} and idx + 1 < len(tokens) and _is_trimester_like_token(tokens[idx + 1]):
             quarter_tokens.append((idx, int(token)))
             continue
 
@@ -1212,9 +1174,25 @@ def _extract_quarter_based_dates(text: str) -> List[str]:
 
 def _has_quarter_reference(text: str) -> bool:
     normalized_text = _normalize_text(text)
-    if "trimestre" in normalized_text:
+    if any(_is_trimester_like_token(token) for token in re.findall(r'[a-záéíóúüñ0-9]+', normalized_text)):
         return True
     return re.search(r'\b[tq]\s*[1-4]\b|\b[tq][1-4]\b', normalized_text) is not None
+
+
+def _is_trimester_like_token(token: str) -> bool:
+    """Detecta variantes de 'trimestre' con tolerancia a typos."""
+    if not token:
+        return False
+
+    normalized_token = _normalize_text(token)
+    if normalized_token.startswith("trimestre"):
+        return True
+
+    return _fuzzy_match(
+        normalized_token,
+        ["trimestre", "trimestres"],
+        threshold=0.74,
+    ) is not None
 
 
 def _extract_year_based_dates(text: str) -> List[str]:
@@ -1246,6 +1224,24 @@ def _is_year_only_period_reference(text: str) -> bool:
     has_month_reference = any(month_name in normalized_text for month_name in MONTHS)
     has_quarter_reference = _has_quarter_reference(text)
     return has_year and not has_month_reference and not has_quarter_reference
+
+
+def _infer_frequency_from_period_for_point(raw_values: List[str]) -> Optional[str]:
+    """Infiere frecuencia m/q/a desde period cuando req_form=point."""
+    valid_values = [raw for raw in raw_values if raw]
+    if not valid_values:
+        return None
+
+    if any(_has_quarter_reference(raw) for raw in valid_values):
+        return "q"
+
+    if any(_extract_month_based_dates(raw) for raw in valid_values):
+        return "m"
+
+    if any(_is_year_only_period_reference(raw) for raw in valid_values):
+        return "a"
+
+    return None
 
 
 def _extract_month_based_dates(text: str) -> List[str]:
@@ -1451,9 +1447,12 @@ def normalize_entities(
 
         response[key] = value
 
-    # Regla crítica de negocio:
-    # Si indicator es genérico/vacío y no se menciona frecuencia,
-    # asumir indicator=imacec y frequency=m.
+    # Regla crítica de negocio para indicador genérico/vacío sin frecuencia:
+    # 1) Si req_form=point, evalúa period para inferir m/q/a y resolver indicador.
+    # 2) Si no hay inferencia por period (o req_form != point):
+    #    - imacec/m solo con cobertura IMACEC y region/investment=none.
+    #    - pib/q si hay señales PIB (region/investment o cobertura actividad PIB).
+    # 3) Si no hay señales suficientes, fallback final imacec/m.
     raw_indicator = (entities.get("indicator") or [None])[0]
     raw_frequency = (entities.get("frequency") or [None])[0]
     indicator_is_generic_or_missing = _is_generic_indicator_value(raw_indicator)
@@ -1468,53 +1467,51 @@ def normalize_entities(
 
     region_intent_label = _intent_label((intents or {}).get("region"))
     investment_intent_label = _intent_label((intents or {}).get("investment"))
-    activity_intent_label = _intent_label((intents or {}).get("activity"))
+    req_form_norm = (req_form or "").strip().lower()
     region_context_for_pib = region_intent_label not in {None, "none"}
     investment_context_for_pib = investment_intent_label not in {None, "none"}
     has_region_or_investment_context = region_context_for_pib or investment_context_for_pib
-    activity_specific_context = activity_intent_label in {"specific", "specific y", "specific_y"}
     raw_activity_values = entities.get("activity") or []
+    period_raw_values = entities.get("period") or []
+    inferred_frequency_from_period = (
+        _infer_frequency_from_period_for_point(period_raw_values)
+        if req_form_norm == "point" and not raw_frequency
+        else None
+    )
     split_activity_values = _split_conjoined_values(
         entity_key="activity",
         raw_values=raw_activity_values,
         indicator=None,
     )
     has_activity_entities = bool(split_activity_values)
+    total_activity_values = len(split_activity_values)
+    imacec_match_count = _activity_match_count(split_activity_values, ACTIVITY_TERMS_IMACEC) if has_activity_entities else 0
+    pib_match_count = _activity_match_count(split_activity_values, ACTIVITY_TERMS_PIB) if has_activity_entities else 0
+    activity_covered_by_imacec = has_activity_entities and imacec_match_count == total_activity_values
+    activity_covered_by_pib = has_activity_entities and pib_match_count == total_activity_values
 
     if indicator_is_generic_or_missing and not raw_frequency:
-        if activity_specific_context and has_activity_entities:
-            total_activity_values = len(split_activity_values)
-            imacec_match_count = _activity_match_count(split_activity_values, ACTIVITY_TERMS_IMACEC)
-            pib_match_count = _activity_match_count(split_activity_values, ACTIVITY_TERMS_PIB)
-
-            if imacec_match_count == total_activity_values:
-                response["indicator"] = ["imacec"]
-                response["frequency"] = ["m"]
-            elif pib_match_count == total_activity_values:
-                response["indicator"] = ["pib"]
-                response["frequency"] = ["q"]
-            elif pib_match_count > imacec_match_count and pib_match_count > 0:
-                response["indicator"] = ["pib"]
-                response["frequency"] = ["q"]
-            elif imacec_match_count > 0:
-                response["indicator"] = ["imacec"]
-                response["frequency"] = ["m"]
-            elif has_region_or_investment_context:
-                response["indicator"] = ["pib"]
-                response["frequency"] = ["q"]
-            else:
-                response["indicator"] = ["imacec"]
-                response["frequency"] = ["m"]
-        elif has_region_or_investment_context:
+        if inferred_frequency_from_period == "m":
+            response["indicator"] = ["imacec"]
+            response["frequency"] = ["m"]
+        elif inferred_frequency_from_period in {"q", "a"}:
+            response["indicator"] = ["pib"]
+            response["frequency"] = [inferred_frequency_from_period]
+        elif activity_covered_by_imacec and not has_region_or_investment_context:
+            response["indicator"] = ["imacec"]
+            response["frequency"] = ["m"]
+        elif has_region_or_investment_context or activity_covered_by_pib:
             response["indicator"] = ["pib"]
             response["frequency"] = ["q"]
         else:
             response["indicator"] = ["imacec"]
             response["frequency"] = ["m"]
     elif not raw_frequency and "pib" in response.get("indicator", []):
-        response["frequency"] = ["q"]
+        response["frequency"] = [inferred_frequency_from_period or "q"]
     elif not raw_frequency and "imacec" in response.get("indicator", []):
-        response["frequency"] = ["m"]
+        response["frequency"] = [inferred_frequency_from_period or "m"]
+    elif not raw_frequency and inferred_frequency_from_period and not response.get("frequency"):
+        response["frequency"] = [inferred_frequency_from_period]
 
     # Re-normalizar activity con el indicador final inferido para evitar
     # desalineación cuando indicator cambia por reglas críticas de negocio.
@@ -1537,8 +1534,6 @@ def normalize_entities(
                 normalized_activity_values.append(normalized_activity)
         response["activity"] = normalized_activity_values
 
-    req_form_norm = (req_form or "").strip().lower()
-    period_raw_values = entities.get("period") or []
     has_year_only_point_period = any(_is_year_only_period_reference(raw) for raw in period_raw_values if raw)
     if req_form_norm == "point" and "pib" in response.get("indicator", []) and has_year_only_point_period:
         response["frequency"] = ["a"]
