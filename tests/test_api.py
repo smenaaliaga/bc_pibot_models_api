@@ -49,16 +49,6 @@ _FAKE_ROUTE_RESULT = {
     "context_confidence": 0.89,
 }
 
-_FAKE_NORMALIZE_RESULT = {
-    "indicator": ["imacec"],
-    "seasonality": ["nsa"],
-    "frequency": [],
-    "activity": [],
-    "region": [],
-    "investment": [],
-    "period": ["2026-02-01", "2026-02-28"],
-}
-
 _FAKE_ROUTER_LABELS = {
     "macro": [1, 0],
     "intent": ["value", "methodology", "other"],
@@ -93,7 +83,6 @@ def mock_bundle():
         patch("app.api.routes.predict", return_value=_FAKE_PREDICT_RESULT),
         patch("app.api.routes.router_bundle", fake_router),
         patch("app.api.routes.route", return_value=_FAKE_ROUTE_RESULT),
-        patch("app.api.routes.normalize_entities", return_value=_FAKE_NORMALIZE_RESULT),
         patch("app.model.loader.bundle", fake),
         patch("app.model.router.router_bundle", fake_router),
     ):
@@ -161,19 +150,6 @@ async def test_predict_single(client):
     assert interp["words"] == ["cual", "fue", "el", "ultimo", "imacec"]
     assert interp["entities"] == {"period": ["ultimo"], "indicator": ["imacec"]}
     assert interp["slot_tags"] == ["O", "O", "O", "B-period", "B-indicator"]
-
-    # Normalized entities map
-    assert "entities_normalized" in interp
-    entities_map = interp["entities_normalized"]
-    assert entities_map["indicator"] == ["imacec"]
-    assert entities_map["seasonality"] == ["nsa"]
-    assert entities_map["period"] == ["2026-02-01", "2026-02-28"]
-    assert entities_map["frequency"] == []
-
-    from app.api import routes as routes_module
-    normalize_call = routes_module.normalize_entities.call_args
-    assert normalize_call is not None
-    assert normalize_call.kwargs["intents"]["activity"] == "total"
 
 
 @pytest.mark.asyncio

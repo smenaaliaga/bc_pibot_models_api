@@ -11,8 +11,6 @@ Entrega clasificación de decisiones de routing e intención multi-head + slot f
 - **Inferencia unificada** (`POST /predict`, `POST /predict/batch`)
 - **Router multitarea real** – encoder `sentence-transformers` + cabezas `torch` (`macro`, `intent`, `context`) cargadas desde HF
 - **Interpretación JointBERT** – clasificación de intención de 5 cabezas + slot filling BIO (NER)
-- **Normalizador de entidades** – fuzzy matching + reglas de inferencia para `indicator`, `seasonality`, `frequency`, `activity`, `region`, `investment`, `period`
-- **Salida dual de entidades** – entidades originales extraídas + entidades normalizadas en la misma respuesta
 - **Modelo desde HF Hub o local** – controlado por la variable `MODEL_SOURCE`
 - **Listo para Docker** – build multi-stage (CPU y GPU)
 - **Métricas Prometheus** en `/metrics`
@@ -21,12 +19,6 @@ Entrega clasificación de decisiones de routing e intención multi-head + slot f
 - **Endpoint de healthcheck** (`/health`)
 - **CORS** configurable
 - **Usuario no-root** en contenedor para seguridad
-
----
-
-## Documentación técnica
-
-- Reglas del normalizador y orden de aplicación: [docs/normalizer_rules.md](docs/normalizer_rules.md)
 
 ---
 
@@ -47,7 +39,6 @@ bc_pibert_endpoint/
 │       ├── __init__.py
 │       ├── loader.py          # Descarga desde HF o carga local, inicializa JointBERT
 │       ├── predictor.py       # Tokenize → forward → decode (JointBERT)
-│       ├── normalizer.py      # Normalización de entidades (fuzzy + inferencia)
 │       └── router.py          # Router multitarea HF (encoder + heads.pt)
 ├── tests/
 │   ├── test_api.py            # Tests HTTP de endpoints (modelos mockeados)
@@ -97,13 +88,13 @@ Variables clave:
 | Variable | Descripción | Valor por defecto |
 |---|---|---|
 | `MODEL_SOURCE` | `huggingface` o `local` | `huggingface` |
-| `HF_REPO_ID` | Repo de HF (ej. `smenaaliaga/pibert`) | `smenaaliaga/pibert` |
+| `HF_REPO_ID` | Repo de HF (ej. `bcch/pibert`) | `bcch/pibert` |
 | `HF_TOKEN` | Token de HF (solo repos privados) | — |
 | `MODEL_LOCAL_DIR` | Ruta absoluta al directorio local del modelo | — |
 | `MAX_SEQ_LEN` | Longitud máxima de secuencia de entrada | `64` |
 | `DEVICE` | `auto`, `cpu`, `cuda`, `mps` | `auto` |
 | `ROUTER_ENABLED` | Habilita clasificadores de routing | `true` |
-| `ROUTER_HF_REPO_ID` | Repo de HF con artefactos `encoder/`, `heads.pt`, `id2label.json` | `smenaaliaga/pibot-intent-router` |
+| `ROUTER_HF_REPO_ID` | Repo de HF con artefactos `encoder/`, `heads.pt`, `id2label.json` | `bcch/pibot-intent-router` |
 | `ROUTER_HF_TOKEN` | Token de HF para repo de router (solo privado) | — |
 | `APP_PORT` | Puerto del servidor | `8000` |
 | `LOG_LEVEL` | `debug`, `info`, `warning`, `error` | `info` |
@@ -198,32 +189,12 @@ Retorna estado del modelo, estado del router y dispositivo.
     "entities": {
       "activity": ["no minerio"],
       "period": ["entre mayo y agosto del 2025"]
-    },
-    "entities_normalized": {
-      "indicator": ["imacec"],
-      "seasonality": ["nsa"],
-      "frequency": ["m"],
-      "activity": ["no_mineria"],
-      "region": [],
-      "investment": [],
-      "period": ["2025-05-01", "2025-08-31"]
     }
   }
 }
 ```
 
 > **Nota:** El campo `routing` es `null` cuando `ROUTER_ENABLED=false` o cuando falla la carga del router.
-> El campo `entities_normalized` es `null` cuando falla la normalización.
-> La respuesta incluye ambos campos: `entities` (valores originales extraídos) y `entities_normalized` (mapa normalizado).
-
-### Detalles de `interpretation.entities_normalized`
-
-- Las claves son fijas: `indicator`, `seasonality`, `frequency`, `activity`, `region`, `investment`, `period`.
-- Los valores son `list[string]` para todas las claves excepto `period`.
-- `period` se normaliza a **YYYY-MM-DD**.
-- `period` según `req_form`:
-  - `latest`, `point` y `range` → lista de 2 elementos `[fecha_inicio, fecha_fin]`
-- Los errores de normalización no rompen la request: la API devuelve predicción y `entities_normalized: null`.
 
 ### Valores posibles por campo
 
@@ -242,21 +213,6 @@ Estos campos retornan **un único valor** por predicción:
 - `interpretation.intents.region.label`: `"general" | "specific" | "none"`
 - `interpretation.intents.investment.label`: `"general" | "specific" | "none"`
 - `interpretation.intents.req_form.label`: `"latest" | "point" | "range"`
-
-#### `entities_normalized`
-
-- `entities_normalized.indicator`: `["imacec"] | ["pib"]`
-- `entities_normalized.seasonality`: `["sa"] | ["nsa"]`
-- `entities_normalized.frequency`: `["m"] | ["q"] | ["a"]`
-- `entities_normalized.activity`: `[]` o alguna clave normalizada:
-  - IMACEC: `bienes | mineria | industria | resto_bienes | comercio | servicios | no_mineria | impuestos`
-  - PIB: `agropecuario | pesca | industria | electricidad | construccion | comercio | restaurantes | transporte | comunicaciones | servicio_financieros | servicios_empresariales | servicio_viviendas | servicio_personales | admin_publica | impuestos`
-- `entities_normalized.region`: `[]` o una clave de región:
-  - `arica_parinacota | tarapaca | antofagasta | atacama | coquimbo | valparaiso | metropolitana | ohiggins | maule | nuble | biobio | araucania | los_rios | los_lagos | aysen | magallanes`
-- `entities_normalized.investment`: `[]` o una clave normalizada:
-  - `demanda_interna | consumo | consumo_gobierno | inversion | inversion_fijo | existencia | exportacion | importacion | ahorro_externo | ahorro_interno`
-- `entities_normalized.period`:
-  - `latest`, `point` y `range`: lista `["YYYY-MM-DD", "YYYY-MM-DD"]`
 
 ### `POST /predict/batch`
 
@@ -353,7 +309,6 @@ print(data["routing"]["intent"]["label"])     # "value"
 
 # Interpretación para consulta de series
 print(data["interpretation"]["entities"])            # valores originales extraídos
-print(data["interpretation"]["entities_normalized"]) # valores normalizados
 ```
 
 ### Swagger UI
@@ -378,7 +333,7 @@ Requisito: el servidor debe estar encendido (por ejemplo, `uvicorn app.main:app 
 ## Integración de routing
 
 El endpoint usa clasificación real de routing desde
-`smenaaliaga/pibot-intent-router` (HF Hub), cargando artefactos de inferencia:
+`bcch/pibot-intent-router` (HF Hub), cargando artefactos de inferencia:
 
 - `encoder/`
 - `heads.pt`

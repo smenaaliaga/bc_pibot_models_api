@@ -29,7 +29,6 @@ from app.api.schemas import (
 )
 from app.config import settings
 from app.model.loader import bundle
-from app.model.normalizer import normalize_entities
 from app.model.predictor import predict
 from app.model.router import route, router_bundle
 
@@ -93,22 +92,6 @@ def _build_interpretation(raw: dict) -> InterpretationResponse:
     canonical_slot_tags = _canonicalize_slot_tags(raw["slot_tags"])
     canonical_entities = _canonicalize_entities(raw["entities"])
 
-    # Normalise entities (graceful – failure yields null)
-    try:
-        normalized = normalize_entities(
-            entities=canonical_entities,
-            calc_mode=raw.get("calc_mode"),
-            req_form=raw.get("req_form"),
-            intents={
-                "activity": raw.get("activity"),
-                "region": raw.get("region"),
-                "investment": raw.get("investment"),
-            },
-        )
-    except Exception:
-        logger.warning("Entity normalisation failed", exc_info=True)
-        normalized = None
-
     return InterpretationResponse(
         words=raw["words"],
         intents={
@@ -120,7 +103,6 @@ def _build_interpretation(raw: dict) -> InterpretationResponse:
         },
         slot_tags=canonical_slot_tags,
         entities=canonical_entities,
-        entities_normalized=normalized,
     )
 
 

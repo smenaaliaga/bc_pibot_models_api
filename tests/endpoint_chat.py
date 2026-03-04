@@ -38,26 +38,6 @@ def _format_head_inline(head: dict[str, Any] | None) -> str:
     )
 
 
-def _format_entities_normalized_expanded(value: Any) -> list[str]:
-    """Render entities_normalized as expanded JSON block with inline lists."""
-    if value is None:
-        return ["null"]
-
-    if not isinstance(value, dict):
-        return [_compact_json(value)]
-
-    items = list(value.items())
-    if not items:
-        return ["{}"]
-
-    lines = ["{"]
-    for idx, (key, item_value) in enumerate(items):
-        suffix = "," if idx < len(items) - 1 else ""
-        lines.append(f'      "{key}": {_compact_json(item_value)}{suffix}')
-    lines.append("    }")
-    return lines
-
-
 def _print_readme_style_response(response_json: dict[str, Any]) -> None:
     print("\n" + "=" * 80)
     print("Response")
@@ -66,9 +46,6 @@ def _print_readme_style_response(response_json: dict[str, Any]) -> None:
     routing = response_json.get("routing") or {}
     interpretation = response_json.get("interpretation") or {}
     intents = interpretation.get("intents") or {}
-    entities_normalized_lines = _format_entities_normalized_expanded(
-        interpretation.get("entities_normalized")
-    )
 
     lines = [
         "{",
@@ -88,9 +65,7 @@ def _print_readme_style_response(response_json: dict[str, Any]) -> None:
         f'      "req_form": {_format_head_inline(intents.get("req_form"))}',
         "    },",
         f'    "slot_tags": {_compact_json(interpretation.get("slot_tags") or [])},',
-        f'    "entities": {_compact_json(interpretation.get("entities"))},',
-        f'    "entities_normalized": {entities_normalized_lines[0]}',
-        *entities_normalized_lines[1:],
+        f'    "entities": {_compact_json(interpretation.get("entities"))}',
         "  }",
         "}",
     ]

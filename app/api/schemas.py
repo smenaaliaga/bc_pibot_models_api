@@ -57,7 +57,7 @@ class RoutingResponse(BaseModel):
 
 
 class InterpretationResponse(BaseModel):
-    """JointBERT interpretation: intents + slot filling + normalised entities."""
+    """JointBERT interpretation: intents + slot filling + extracted entities."""
 
     words: List[str]
     intents: Dict[str, HeadPrediction] = Field(
@@ -67,10 +67,6 @@ class InterpretationResponse(BaseModel):
     entities: Dict[str, List[str]] = Field(
         default_factory=dict,
         description="Original entities extracted from BIO tags",
-    )
-    entities_normalized: Optional[Dict[str, List[str] | None]] = Field(
-        None,
-        description="Normalised entities map: list values for all keys; period always as 2-item list [start, end]",
     )
 
 
