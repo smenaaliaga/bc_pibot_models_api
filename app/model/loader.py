@@ -77,9 +77,13 @@ def _resolve_model_dir() -> Path:
 
     # Hugging Face Hub
     logger.info("Downloading model from HF: %s", settings.hf_repo_id)
+    repo_dirname = settings.hf_repo_id.replace("/", "--")
+    local_model_dir = Path("model_cache") / "snapshots" / repo_dirname
     local_dir = snapshot_download(
         repo_id=settings.hf_repo_id,
         token=settings.hf_token,
+        local_dir=str(local_model_dir),
+        local_dir_use_symlinks=False,
         # cache inside working dir so Docker layer caching works
         cache_dir="model_cache",
     )
