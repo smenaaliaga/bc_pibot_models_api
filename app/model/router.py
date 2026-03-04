@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 import json
-import os
 from typing import Any, Dict, List
 
 try:
@@ -159,21 +158,23 @@ def _download_router_artifacts() -> Path:
     local_dir = Path("model_cache") / "router_artifacts"
     local_dir.mkdir(parents=True, exist_ok=True)
 
+    marker_files = [
+        local_dir / "id2label.json",
+        local_dir / "train_config.json",
+        local_dir / "heads.pt",
+        local_dir / "encoder",
+    ]
+    if all(path.exists() for path in marker_files):
+        logger.info("Using cached router artifacts: %s", local_dir)
+        return local_dir
+
     snapshot_kwargs: dict[str, Any] = {
         "repo_id": settings.router_hf_repo_id,
         "token": settings.router_hf_token,
         "cache_dir": "model_cache",
         "local_dir": str(local_dir),
     }
-
-    if os.name == "nt":
-        snapshot_kwargs["local_dir_use_symlinks"] = False
-
-    try:
-        return Path(snapshot_download(**snapshot_kwargs))
-    except TypeError:
-        snapshot_kwargs.pop("local_dir_use_symlinks", None)
-        return Path(snapshot_download(**snapshot_kwargs))
+    return Path(snapshot_download(**snapshot_kwargs))
 
 
 class RouterBundle:

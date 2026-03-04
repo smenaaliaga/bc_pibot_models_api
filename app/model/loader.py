@@ -76,14 +76,25 @@ def _resolve_model_dir() -> Path:
         return path
 
     # Hugging Face Hub
-    logger.info("Downloading model from HF: %s", settings.hf_repo_id)
     repo_dirname = settings.hf_repo_id.replace("/", "--")
     local_model_dir = Path("model_cache") / "snapshots" / repo_dirname
+
+    marker_files = [
+        local_model_dir / "config.json",
+        local_model_dir / "training_args.bin",
+        local_model_dir / "modeling_jointbert.py",
+        local_model_dir / "module.py",
+        local_model_dir / "labels",
+    ]
+    if all(path.exists() for path in marker_files):
+        logger.info("Using cached local model directory: %s", local_model_dir)
+        return local_model_dir
+
+    logger.info("Downloading model from HF: %s", settings.hf_repo_id)
     local_dir = snapshot_download(
         repo_id=settings.hf_repo_id,
         token=settings.hf_token,
         local_dir=str(local_model_dir),
-        local_dir_use_symlinks=False,
         # cache inside working dir so Docker layer caching works
         cache_dir="model_cache",
     )
