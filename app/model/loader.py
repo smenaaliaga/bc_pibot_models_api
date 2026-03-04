@@ -17,6 +17,67 @@ from app.config import ModelSource, settings
 
 logger = logging.getLogger(__name__)
 
+
+def _load_raw_state_dict(model_dir: Path) -> dict:
+    """Load raw checkpoint state dict from safetensors or torch bin if available."""
+    safetensors_path = model_dir / "model.safetensors"
+    if safetensors_path.exists():
+        from safetensors.torch import load_file
+
+        return load_file(str(safetensors_path))
+
+    torch_bin_path = model_dir / "pytorch_model.bin"
+    if torch_bin_path.exists():
+        state = torch.load(torch_bin_path, map_location="cpu")
+        if isinstance(state, dict):
+            return state
+
+    return {}
+
+
+def _restore_legacy_crf_weights(model: torch.nn.Module, model_dir: Path) -> None:
+    """Map legacy CRF key names from checkpoint to current CRF parameter names."""
+    if not hasattr(model, "crf"):
+        return
+
+    raw_state = _load_raw_state_dict(model_dir)
+    if not raw_state:
+        return
+
+    current_state = model.state_dict()
+    key_mapping = {
+        "crf.start_trans": "crf.start_transitions",
+        "crf.end_trans": "crf.end_transitions",
+        "crf.trans_matrix": "crf.transitions",
+    }
+
+    patched_state: dict[str, torch.Tensor] = {}
+    for old_key, new_key in key_mapping.items():
+        if old_key not in raw_state or new_key not in current_state:
+            continue
+
+        old_tensor = raw_state[old_key]
+        if not isinstance(old_tensor, torch.Tensor):
+            continue
+
+        if old_tensor.shape != current_state[new_key].shape:
+            logger.warning(
+                "Skipping legacy CRF weight remap %s -> %s due to shape mismatch (%s != %s)",
+                old_key,
+                new_key,
+                tuple(old_tensor.shape),
+                tuple(current_state[new_key].shape),
+            )
+            continue
+
+        patched_state[new_key] = old_tensor
+
+    if not patched_state:
+        return
+
+    model.load_state_dict(patched_state, strict=False)
+    logger.info("Restored legacy CRF weights: %s", ", ".join(sorted(patched_state.keys())))
+
 # ── Label helpers ────────────────────────────────────────────
 
 
@@ -177,6 +238,7 @@ class ModelBundle:
             req_form_label_lst=self.labels["req_form"],
             slot_label_lst=self.labels["slot"],
         )
+        _restore_legacy_crf_weights(self.model, self.model_dir)
         self.model.to(self.device)
         self.model.eval()
         self._loaded = True
