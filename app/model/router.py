@@ -13,9 +13,10 @@ except ImportError:  # pragma: no cover - import guard for lightweight test envs
     torch = None  # type: ignore[assignment]
 
 try:
-    from huggingface_hub import snapshot_download
+    from huggingface_hub import HfApi, snapshot_download
 except ImportError:  # pragma: no cover - import guard for lightweight test envs
     snapshot_download = None  # type: ignore[assignment]
+    HfApi = None  # type: ignore[assignment]
 
 from app.config import settings
 
@@ -177,6 +178,17 @@ def _download_router_artifacts() -> Path:
     return Path(snapshot_download(**snapshot_kwargs))
 
 
+def _resolve_router_hf_commit(repo_id: str, revision: str, token: str | None) -> str | None:
+    if HfApi is None:
+        return None
+    try:
+        info = HfApi().model_info(repo_id=repo_id, revision=revision, token=token)
+    except Exception:
+        logger.warning("Could not resolve HF commit for router %s@%s", repo_id, revision, exc_info=True)
+        return None
+    return getattr(info, "sha", None)
+
+
 class RouterBundle:
     """Encapsulates HF encoder + multitask heads used for routing decisions."""
 
@@ -187,6 +199,9 @@ class RouterBundle:
         self.labels: Dict[str, List[str | int]] = ROUTER_LABELS
         self.max_length: int = 24
         self.device: str = "cpu"
+        self.hf_repo_id: str | None = None
+        self.hf_revision: str | None = None
+        self.hf_commit: str | None = None
         self._loaded = False
 
     @property
@@ -202,6 +217,14 @@ class RouterBundle:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:  # pragma: no cover - dependency guard
             raise RuntimeError("sentence-transformers is required to load the router encoder") from exc
+
+        self.hf_repo_id = settings.router_hf_repo_id
+        self.hf_revision = "main"
+        self.hf_commit = _resolve_router_hf_commit(
+            repo_id=settings.router_hf_repo_id,
+            revision=self.hf_revision,
+            token=settings.router_hf_token,
+        )
 
         self.device = _resolve_device(settings.device)
         artifact_dir = _download_router_artifacts()
@@ -248,6 +271,12 @@ class RouterBundle:
         self.head_weights = head_weights
         self.head_biases = head_biases
         self._loaded = True
+        logger.info(
+            "Router source: repo=%s revision=%s commit=%s",
+            self.hf_repo_id,
+            self.hf_revision,
+            self.hf_commit or "unknown",
+        )
         logger.info("RouterBundle loaded from HF repo '%s' on device '%s'", settings.router_hf_repo_id, self.device)
 
 

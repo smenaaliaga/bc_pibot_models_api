@@ -10,12 +10,22 @@ from pathlib import Path
 from typing import Dict, List
 
 import torch
-from huggingface_hub import snapshot_download
+from huggingface_hub import HfApi, snapshot_download
 from transformers import AutoConfig, AutoModel, AutoTokenizer
 
 from app.config import ModelSource, settings
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_hf_commit(repo_id: str, revision: str, token: str | None) -> str | None:
+    """Resolve exact commit SHA for a Hugging Face repo revision."""
+    try:
+        info = HfApi().model_info(repo_id=repo_id, revision=revision, token=token)
+    except Exception:
+        logger.warning("Could not resolve HF commit for %s@%s", repo_id, revision, exc_info=True)
+        return None
+    return getattr(info, "sha", None)
 
 
 def _load_raw_state_dict(model_dir: Path) -> dict:
@@ -173,6 +183,10 @@ class ModelBundle:
         self.model = None
         self.labels: Dict[str, List[str]] = {}
         self.train_args = None
+        self.hf_repo_id: str | None = None
+        self.hf_revision: str | None = None
+        self.hf_commit: str | None = None
+        self.model_source: str = settings.model_source.value
         self._loaded = False
 
     @property
@@ -183,6 +197,26 @@ class ModelBundle:
         """Heavy init – call once at startup, NOT at import time."""
         self.model_dir = _resolve_model_dir()
         self.device = resolve_device(settings.device)
+        self.model_source = settings.model_source.value
+
+        if settings.model_source == ModelSource.huggingface:
+            self.hf_repo_id = settings.hf_repo_id
+            self.hf_revision = "main"
+            self.hf_commit = _resolve_hf_commit(
+                repo_id=settings.hf_repo_id,
+                revision=self.hf_revision,
+                token=settings.hf_token,
+            )
+            logger.info(
+                "JointBERT source: repo=%s revision=%s commit=%s",
+                self.hf_repo_id,
+                self.hf_revision,
+                self.hf_commit or "unknown",
+            )
+        else:
+            self.hf_repo_id = None
+            self.hf_revision = None
+            self.hf_commit = None
 
         # Labels
         self.labels = load_labels(self.model_dir)

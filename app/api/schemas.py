@@ -99,6 +99,26 @@ class HealthResponse(BaseModel):
     router_loaded: bool = False
     device: Optional[str] = None
     model_source: Optional[str] = None
+    model_hf_repo_id: Optional[str] = None
+    model_hf_revision: Optional[str] = None
+    model_hf_commit: Optional[str] = None
+    router_hf_repo_id: Optional[str] = None
+    router_hf_revision: Optional[str] = None
+    router_hf_commit: Optional[str] = None
+
+
+class ModelVersionInfo(BaseModel):
+    source: str
+    loaded: bool
+    repo_id: Optional[str] = None
+    revision: Optional[str] = None
+    commit: Optional[str] = None
+    local_dir: Optional[str] = None
+
+
+class VersionsResponse(BaseModel):
+    model: ModelVersionInfo
+    router: ModelVersionInfo
 
 
 class ErrorResponse(BaseModel):

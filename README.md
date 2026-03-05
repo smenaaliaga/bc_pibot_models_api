@@ -154,7 +154,38 @@ Retorna estado del modelo, estado del router y dispositivo.
   "model_loaded": true,
   "router_loaded": true,
   "device": "cuda",
-  "model_source": "huggingface"
+  "model_source": "huggingface",
+  "model_hf_repo_id": "bcch/pibert",
+  "model_hf_revision": "main",
+  "model_hf_commit": "bb5175e1d0366f290077febcff82f2f52f2ab2c0",
+  "router_hf_repo_id": "bcch/pibot-intent-router",
+  "router_hf_revision": "main",
+  "router_hf_commit": "28ef5669144903259df5e756b5b7b6968491fdd8"
+}
+```
+
+### `GET /versions`
+
+Retorna la versión/fuente efectiva de ambos modelos (repo, revisión y commit de HF).
+
+```json
+{
+  "model": {
+    "source": "huggingface",
+    "loaded": true,
+    "repo_id": "bcch/pibert",
+    "revision": "main",
+    "commit": "bb5175e1d0366f290077febcff82f2f52f2ab2c0",
+    "local_dir": "model_cache/snapshots/bcch--pibert"
+  },
+  "router": {
+    "source": "huggingface",
+    "loaded": true,
+    "repo_id": "bcch/pibot-intent-router",
+    "revision": "main",
+    "commit": "28ef5669144903259df5e756b5b7b6968491fdd8",
+    "local_dir": "model_cache/router_artifacts"
+  }
 }
 ```
 

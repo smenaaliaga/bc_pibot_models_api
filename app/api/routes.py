@@ -5,6 +5,7 @@ Endpoints:
     POST /predict          – single-text inference (routing + interpretation)
     POST /predict/batch    – batch inference
     GET  /health           – liveness + model status
+    GET  /versions         – loaded model/router source version info
     GET  /labels           – list JointBERT label mappings
     GET  /router/labels    – list router label mappings
 """
@@ -26,6 +27,8 @@ from app.api.schemas import (
     PredictRequest,
     PredictResponse,
     RoutingResponse,
+    ModelVersionInfo,
+    VersionsResponse,
 )
 from app.config import settings
 from app.model.loader import bundle
@@ -143,7 +146,43 @@ async def health():
         router_loaded=router_bundle.is_loaded,
         device=bundle.device if bundle.is_loaded else None,
         model_source=settings.model_source.value,
+        model_hf_repo_id=getattr(bundle, "hf_repo_id", None),
+        model_hf_revision=getattr(bundle, "hf_revision", None),
+        model_hf_commit=getattr(bundle, "hf_commit", None),
+        router_hf_repo_id=getattr(router_bundle, "hf_repo_id", None),
+        router_hf_revision=getattr(router_bundle, "hf_revision", None),
+        router_hf_commit=getattr(router_bundle, "hf_commit", None),
     )
+
+
+@router.get(
+    "/versions",
+    response_model=VersionsResponse,
+    tags=["metadata"],
+    summary="Model source versions (repo, revision, commit)",
+)
+async def get_versions():
+    model_dir = str(bundle.model_dir) if getattr(bundle, "model_dir", None) else None
+    model_info = ModelVersionInfo(
+        source=settings.model_source.value,
+        loaded=bundle.is_loaded,
+        repo_id=getattr(bundle, "hf_repo_id", None),
+        revision=getattr(bundle, "hf_revision", None),
+        commit=getattr(bundle, "hf_commit", None),
+        local_dir=model_dir,
+    )
+
+    router_source = "huggingface" if settings.router_enabled else "disabled"
+    router_info = ModelVersionInfo(
+        source=router_source,
+        loaded=router_bundle.is_loaded,
+        repo_id=getattr(router_bundle, "hf_repo_id", None),
+        revision=getattr(router_bundle, "hf_revision", None),
+        commit=getattr(router_bundle, "hf_commit", None),
+        local_dir="model_cache/router_artifacts" if settings.router_enabled else None,
+    )
+
+    return VersionsResponse(model=model_info, router=router_info)
 
 
 @router.get(
