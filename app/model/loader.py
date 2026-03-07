@@ -195,12 +195,36 @@ class ModelBundle:
         else:
             raise FileNotFoundError(f"training_args.bin not found in {self.model_dir}")
 
-        # Tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            str(self.model_dir),
-            trust_remote_code=True,
-        )
-        logger.info("Tokenizer loaded from %s", self.model_dir)
+        # Tokenizer: prefer training-args source (CLI parity), but fallback to
+        # local snapshot tokenizer when optional dependencies are missing.
+        tokenizer_source = getattr(self.train_args, "model_name_or_path", None) or str(self.model_dir)
+        tokenizer_fallback = str(self.model_dir)
+        candidates: list[tuple[str, bool]] = []
+        for source in (tokenizer_source, tokenizer_fallback):
+            candidates.append((source, True))
+            candidates.append((source, False))
+
+        seen: set[tuple[str, bool]] = set()
+        errors: list[str] = []
+        for source, use_fast in candidates:
+            key = (source, use_fast)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            try:
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    source,
+                    trust_remote_code=True,
+                    use_fast=use_fast,
+                )
+                logger.info("Tokenizer loaded from %s (use_fast=%s)", source, use_fast)
+                break
+            except Exception as exc:
+                errors.append(f"{source} (use_fast={use_fast}): {exc}")
+                logger.warning("Failed loading tokenizer from %s (use_fast=%s): %s", source, use_fast, exc)
+        else:
+            raise RuntimeError("Unable to load tokenizer. Attempts: " + " | ".join(errors))
 
         # Model – import the custom JointBERT class from the snapshot
         # instead of relying on AutoModel (which needs auto_map in config.json).

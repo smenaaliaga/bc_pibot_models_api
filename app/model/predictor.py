@@ -83,6 +83,60 @@ def _decode_head(
     return label, round(confidence, 6)
 
 
+def _project_slot_predictions_to_words(
+    *,
+    words: List[str],
+    word_ids: List[int | None],
+    attention_mask: List[int],
+    slot_pred_ids: List[int],
+    slot_label_lst: List[str],
+) -> List[str]:
+    """Project token-level slot IDs to one BIO tag per original word.
+
+    Handles CRF implementations that decode either full token sequences
+    (including special tokens) or only word-piece positions.
+    """
+    slot_tags_per_word = ["O"] * len(words)
+    if not words:
+        return slot_tags_per_word
+
+    seq_len = int(sum(attention_mask))
+    token_positions = list(range(seq_len))
+    word_token_positions = [i for i in token_positions if i < len(word_ids) and word_ids[i] is not None]
+
+    if len(slot_pred_ids) == len(token_positions):
+        pred_by_token_pos = {pos: slot_pred_ids[pos] for pos in token_positions}
+    elif len(slot_pred_ids) == len(word_token_positions):
+        pred_by_token_pos = {
+            pos: slot_pred_ids[idx]
+            for idx, pos in enumerate(word_token_positions)
+        }
+    else:
+        # Fallback: align from the left over the valid attention span.
+        pred_by_token_pos = {
+            pos: slot_pred_ids[idx]
+            for idx, pos in enumerate(token_positions[: len(slot_pred_ids)])
+        }
+
+    seen_word_idxs: set[int] = set()
+    for token_pos in token_positions:
+        if token_pos >= len(word_ids):
+            break
+
+        word_idx = word_ids[token_pos]
+        if word_idx is None or word_idx in seen_word_idxs:
+            continue
+
+        seen_word_idxs.add(word_idx)
+        pred_id = pred_by_token_pos.get(token_pos)
+        if pred_id is None:
+            continue
+        if 0 <= pred_id < len(slot_label_lst):
+            slot_tags_per_word[word_idx] = slot_label_lst[pred_id]
+
+    return slot_tags_per_word
+
+
 # ── Main predict function ────────────────────────────────────
 
 
@@ -111,40 +165,28 @@ def predict(bundle: ModelBundle, text: str) -> dict:
     args = bundle.train_args
     max_seq_len = getattr(args, "max_seq_len", 64)
 
-    # ── Tokenize word-by-word (preserving alignment) ──────────
-    tokens: List[str] = []
-    word_ids: List[int] = []
+    # ── Tokenize preserving word alignment (works for BERT and DeBERTa) ──
+    encoded = tokenizer(
+        words,
+        is_split_into_words=True,
+        add_special_tokens=True,
+        truncation=True,
+        max_length=max_seq_len,
+        padding="max_length",
+        return_tensors="pt",
+    )
 
-    for i, word in enumerate(words):
-        word_tokens = tokenizer.tokenize(word)
-        if not word_tokens:
-            word_tokens = [tokenizer.unk_token]
-        tokens.extend(word_tokens)
-        word_ids.extend([i] * len(word_tokens))
+    raw_word_ids = encoded.word_ids(batch_index=0) if hasattr(encoded, "word_ids") else None
+    if raw_word_ids is None:
+        raise RuntimeError("Tokenizer does not provide word alignment (word_ids).")
 
-    # Truncate
-    if len(tokens) > max_seq_len - 2:
-        tokens = tokens[: max_seq_len - 2]
-        word_ids = word_ids[: max_seq_len - 2]
+    word_ids: List[int | None] = [wid if wid is not None else None for wid in raw_word_ids]
 
-    # Special tokens
-    tokens = [tokenizer.cls_token] + tokens + [tokenizer.sep_token]
-    word_ids = [-1] + word_ids + [-1]
-
-    # Convert to IDs + pad
-    input_ids = tokenizer.convert_tokens_to_ids(tokens)
-    attention_mask = [1] * len(input_ids)
-    token_type_ids = [0] * len(input_ids)
-
-    padding_length = max_seq_len - len(input_ids)
-    input_ids += [tokenizer.pad_token_id or 0] * padding_length
-    attention_mask += [0] * padding_length
-    token_type_ids += [0] * padding_length
-
-    # To tensors
-    input_ids_t = torch.tensor([input_ids], dtype=torch.long, device=device)
-    attention_mask_t = torch.tensor([attention_mask], dtype=torch.long, device=device)
-    token_type_ids_t = torch.tensor([token_type_ids], dtype=torch.long, device=device)
+    input_ids_t = encoded["input_ids"].to(device)
+    attention_mask_t = encoded["attention_mask"].to(device)
+    token_type_ids_t = encoded.get("token_type_ids")
+    if token_type_ids_t is not None:
+        token_type_ids_t = token_type_ids_t.to(device)
 
     # ── Forward pass ──────────────────────────────────────────
     with torch.no_grad():
@@ -189,16 +231,13 @@ def predict(bundle: ModelBundle, text: str) -> dict:
     else:
         slot_pred_ids = torch.argmax(slot_logits, dim=-1).squeeze(0).tolist()
 
-    slot_tags_per_word = ["O"] * len(words)
-    seen_word_idxs: set = set()
-    for idx, word_idx in enumerate(word_ids):
-        if word_idx < 0 or word_idx in seen_word_idxs:
-            continue
-        seen_word_idxs.add(word_idx)
-        if idx < len(slot_pred_ids):
-            pred_id = slot_pred_ids[idx]
-            if 0 <= pred_id < len(slot_label_lst):
-                slot_tags_per_word[word_idx] = slot_label_lst[pred_id]
+    slot_tags_per_word = _project_slot_predictions_to_words(
+        words=words,
+        word_ids=word_ids,
+        attention_mask=attention_mask_t.squeeze(0).tolist(),
+        slot_pred_ids=list(slot_pred_ids),
+        slot_label_lst=slot_label_lst,
+    )
 
     entities = extract_entities_from_bio(words, slot_tags_per_word)
 

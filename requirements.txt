@@ -10,6 +10,8 @@ transformers>=4.40,<5
 huggingface-hub>=0.23,<1
 safetensors>=0.4
 pytorch-crf>=0.7,<1
+protobuf>=4.25,<6
+sentencepiece>=0.2,<1
 
 # ML – Router (multitask encoder + torch heads)
 sentence-transformers>=3.0,<4

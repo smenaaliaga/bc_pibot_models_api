@@ -4,6 +4,7 @@ These run without any model artefacts.
 """
 
 from app.model.predictor import extract_entities_from_bio
+from app.model.predictor import _project_slot_predictions_to_words
 
 
 def test_simple_bio():
@@ -43,3 +44,39 @@ def test_different_entity_types():
     tags = ["B-indicator", "O", "B-period", "I-period"]
     result = extract_entities_from_bio(words, tags)
     assert result == {"indicator": ["imacec"], "period": ["junio 2024"]}
+
+
+def test_project_slot_predictions_with_special_tokens():
+    words = ["imacec", "junio"]
+    word_ids = [None, 0, 1, None, None, None]
+    attention_mask = [1, 1, 1, 1, 0, 0]
+    slot_pred_ids = [0, 1, 2, 0]
+    slot_labels = ["O", "B-indicator", "B-period"]
+
+    projected = _project_slot_predictions_to_words(
+        words=words,
+        word_ids=word_ids,
+        attention_mask=attention_mask,
+        slot_pred_ids=slot_pred_ids,
+        slot_label_lst=slot_labels,
+    )
+
+    assert projected == ["B-indicator", "B-period"]
+
+
+def test_project_slot_predictions_word_positions_only():
+    words = ["no", "minerio", "2025"]
+    word_ids = [None, 0, 1, 2, None, None]
+    attention_mask = [1, 1, 1, 1, 1, 0]
+    slot_pred_ids = [1, 2, 3]
+    slot_labels = ["O", "B-activity", "I-activity", "B-period"]
+
+    projected = _project_slot_predictions_to_words(
+        words=words,
+        word_ids=word_ids,
+        attention_mask=attention_mask,
+        slot_pred_ids=slot_pred_ids,
+        slot_label_lst=slot_labels,
+    )
+
+    assert projected == ["B-activity", "I-activity", "B-period"]
