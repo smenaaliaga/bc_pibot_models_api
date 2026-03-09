@@ -104,8 +104,10 @@ Variables clave:
 ### 3) Ejecutar
 
 ```bash
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload 
 ```
+
+Si es la primera vez (descarga inicial desde HF), puedes iniciar una vez sin `--reload` y luego volver al comando anterior.
 
 El servidor inicia en `http://localhost:8000`. Documentación interactiva en `http://localhost:8000/docs`.
 

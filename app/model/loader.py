@@ -238,6 +238,7 @@ class ModelBundle:
         # suppress the sentencepiece byte-fallback warning (cosmetic only).
         tokenizer_remote = getattr(self.train_args, "model_name_or_path", None) or str(self.model_dir)
         tokenizer_local = str(self.model_dir)
+
         candidates: list[tuple[str, bool]] = []
         for source in (tokenizer_local, tokenizer_remote):
             candidates.append((source, True))
@@ -245,6 +246,7 @@ class ModelBundle:
 
         seen: set[tuple[str, bool]] = set()
         errors: list[str] = []
+        selected = False
         for source, use_fast in candidates:
             key = (source, use_fast)
             if key in seen:
@@ -265,11 +267,17 @@ class ModelBundle:
                         use_fast=use_fast,
                     )
                 logger.info("Tokenizer loaded from %s (use_fast=%s)", source, use_fast)
-                break
+                # Predictor requires fast tokenizer for word_ids() alignment.
+                if use_fast and bool(getattr(self.tokenizer, "is_fast", False)):
+                    selected = True
+                    break
+                if use_fast:
+                    logger.warning("Tokenizer loaded but is not fast; trying fallback.")
             except Exception as exc:
                 errors.append(f"{source} (use_fast={use_fast}): {exc}")
                 logger.warning("Failed loading tokenizer from %s (use_fast=%s): %s", source, use_fast, exc)
-        else:
+
+        if not selected:
             raise RuntimeError("Unable to load tokenizer. Attempts: " + " | ".join(errors))
 
         # Model – import the custom JointBERT class from the snapshot

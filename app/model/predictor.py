@@ -8,7 +8,6 @@ structured as a stateless function that receives the loaded model bundle.
 from __future__ import annotations
 
 import logging
-import re
 from collections import defaultdict
 from typing import Dict, List, Tuple
 
@@ -17,22 +16,6 @@ import torch
 from app.model.loader import ModelBundle
 
 logger = logging.getLogger(__name__)
-
-_MONTHS_ES = {
-    "enero",
-    "febrero",
-    "marzo",
-    "abril",
-    "mayo",
-    "junio",
-    "julio",
-    "agosto",
-    "septiembre",
-    "setiembre",
-    "octubre",
-    "noviembre",
-    "diciembre",
-}
 
 # ── BIO entity extraction ────────────────────────────────────
 
@@ -154,54 +137,6 @@ def _project_slot_predictions_to_words(
     return slot_tags_per_word
 
 
-def _apply_slot_fallback_heuristics(words: List[str], slot_tags: List[str]) -> List[str]:
-    """Add conservative slot hints when model output is fully O.
-
-    This keeps model predictions untouched unless no entity was detected at all.
-    """
-    if not words or len(words) != len(slot_tags):
-        return slot_tags
-    if any(tag != "O" for tag in slot_tags):
-        return slot_tags
-
-    augmented = list(slot_tags)
-
-    def normalize(token: str) -> str:
-        # Strip punctuation around words while preserving accents/letters.
-        return re.sub(r"^[^\w]+|[^\w]+$", "", token, flags=re.UNICODE).lower()
-
-    normalized_words = [normalize(w) for w in words]
-
-    # Mark explicit 4-digit years as period entities.
-    previous_was_period = False
-    for idx, token in enumerate(normalized_words):
-        if re.fullmatch(r"(19|20)\d{2}", token):
-            augmented[idx] = "I-period" if previous_was_period else "B-period"
-            previous_was_period = True
-        else:
-            previous_was_period = False
-
-    # If a year is present, include month tokens as period too.
-    has_period = any(tag.endswith("-period") for tag in augmented)
-    if has_period:
-        for idx, token in enumerate(normalized_words):
-            if token in _MONTHS_ES and augmented[idx] == "O":
-                # Attach adjacent month tokens to the current/next period span.
-                left_is_period = idx > 0 and augmented[idx - 1].endswith("-period")
-                augmented[idx] = "I-period" if left_is_period else "B-period"
-
-    # Re-label contiguous period spans as BIO-consistent B/I sequences.
-    in_span = False
-    for idx, tag in enumerate(augmented):
-        if tag.endswith("-period"):
-            augmented[idx] = "I-period" if in_span else "B-period"
-            in_span = True
-        else:
-            in_span = False
-
-    return augmented
-
-
 # ── Main predict function ────────────────────────────────────
 
 
@@ -303,8 +238,6 @@ def predict(bundle: ModelBundle, text: str) -> dict:
         slot_pred_ids=list(slot_pred_ids),
         slot_label_lst=slot_label_lst,
     )
-
-    slot_tags_per_word = _apply_slot_fallback_heuristics(words, slot_tags_per_word)
     entities = extract_entities_from_bio(words, slot_tags_per_word)
 
     return {

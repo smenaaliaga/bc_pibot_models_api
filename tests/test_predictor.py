@@ -5,7 +5,6 @@ These run without any model artefacts.
 
 from app.model.predictor import extract_entities_from_bio
 from app.model.predictor import _project_slot_predictions_to_words
-from app.model.predictor import _apply_slot_fallback_heuristics
 
 
 def test_simple_bio():
@@ -81,19 +80,3 @@ def test_project_slot_predictions_word_positions_only():
     )
 
     assert projected == ["B-activity", "I-activity", "B-period"]
-
-
-def test_slot_fallback_marks_explicit_year_as_period():
-    words = ["cuanto", "crecio", "en", "1974"]
-    tags = ["O", "O", "O", "O"]
-
-    result = _apply_slot_fallback_heuristics(words, tags)
-    assert result == ["O", "O", "O", "B-period"]
-
-
-def test_slot_fallback_marks_month_when_year_present():
-    words = ["imacec", "de", "mayo", "2025"]
-    tags = ["O", "O", "O", "O"]
-
-    result = _apply_slot_fallback_heuristics(words, tags)
-    assert result == ["O", "O", "B-period", "I-period"]
