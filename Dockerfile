@@ -22,7 +22,6 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     HF_HOME=/app/model_cache \
-    TRANSFORMERS_CACHE=/app/model_cache \
     PORT=8000
 
 WORKDIR /app
