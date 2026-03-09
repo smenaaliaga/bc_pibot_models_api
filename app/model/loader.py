@@ -28,65 +28,41 @@ def _resolve_hf_commit(repo_id: str, revision: str, token: str | None) -> str | 
     return getattr(info, "sha", None)
 
 
-def _load_raw_state_dict(model_dir: Path) -> dict:
-    """Load raw checkpoint state dict from safetensors or torch bin if available."""
+
+_CRF_KEY_MAP = {
+    "crf.start_trans": "crf.start_transitions",
+    "crf.end_trans": "crf.end_transitions",
+    "crf.trans_matrix": "crf.transitions",
+}
+
+
+def _normalize_checkpoint_crf_keys(model_dir: Path) -> None:
+    """Rename legacy CRF keys in the checkpoint file so ``from_pretrained`` finds them.
+
+    This is idempotent: if the keys are already renamed the function is a no-op.
+    """
     safetensors_path = model_dir / "model.safetensors"
     if safetensors_path.exists():
-        from safetensors.torch import load_file
+        from safetensors.torch import load_file, save_file
 
-        return load_file(str(safetensors_path))
+        state = load_file(str(safetensors_path))
+        if not any(k in state for k in _CRF_KEY_MAP):
+            return  # already normalised or no CRF keys
+        # Clone tensors so the memory-mapped file can be released before we
+        # overwrite it (Windows locks the file while it is mapped).
+        new_state = {_CRF_KEY_MAP.get(k, k): v.clone() for k, v in state.items()}
+        del state
+        save_file(new_state, str(safetensors_path))
+        logger.info("Renamed legacy CRF keys in %s", safetensors_path.name)
+        return
 
     torch_bin_path = model_dir / "pytorch_model.bin"
     if torch_bin_path.exists():
         state = torch.load(torch_bin_path, map_location="cpu")
-        if isinstance(state, dict):
-            return state
-
-    return {}
-
-
-def _restore_legacy_crf_weights(model: torch.nn.Module, model_dir: Path) -> None:
-    """Map legacy CRF key names from checkpoint to current CRF parameter names."""
-    if not hasattr(model, "crf"):
-        return
-
-    raw_state = _load_raw_state_dict(model_dir)
-    if not raw_state:
-        return
-
-    current_state = model.state_dict()
-    key_mapping = {
-        "crf.start_trans": "crf.start_transitions",
-        "crf.end_trans": "crf.end_transitions",
-        "crf.trans_matrix": "crf.transitions",
-    }
-
-    patched_state: dict[str, torch.Tensor] = {}
-    for old_key, new_key in key_mapping.items():
-        if old_key not in raw_state or new_key not in current_state:
-            continue
-
-        old_tensor = raw_state[old_key]
-        if not isinstance(old_tensor, torch.Tensor):
-            continue
-
-        if old_tensor.shape != current_state[new_key].shape:
-            logger.warning(
-                "Skipping legacy CRF weight remap %s -> %s due to shape mismatch (%s != %s)",
-                old_key,
-                new_key,
-                tuple(old_tensor.shape),
-                tuple(current_state[new_key].shape),
-            )
-            continue
-
-        patched_state[new_key] = old_tensor
-
-    if not patched_state:
-        return
-
-    model.load_state_dict(patched_state, strict=False)
-    logger.info("Restored legacy CRF weights: %s", ", ".join(sorted(patched_state.keys())))
+        if isinstance(state, dict) and any(k in state for k in _CRF_KEY_MAP):
+            new_state = {_CRF_KEY_MAP.get(k, k): v for k, v in state.items()}
+            torch.save(new_state, torch_bin_path)
+            logger.info("Renamed legacy CRF keys in %s", torch_bin_path.name)
 
 # ── Label helpers ────────────────────────────────────────────
 
@@ -157,7 +133,13 @@ def _resolve_model_dir() -> Path:
         local_model_dir / "module.py",
         local_model_dir / "labels",
     ]
-    if all(path.exists() for path in marker_files):
+    # At least one weights file must be present to consider the cache valid.
+    weights_files = [
+        local_model_dir / "model.safetensors",
+        local_model_dir / "pytorch_model.bin",
+    ]
+    has_weights = any(f.exists() for f in weights_files)
+    if has_weights and all(path.exists() for path in marker_files):
         logger.info("Using cached local model directory: %s", local_model_dir)
         return local_model_dir
 
@@ -229,12 +211,13 @@ class ModelBundle:
         else:
             raise FileNotFoundError(f"training_args.bin not found in {self.model_dir}")
 
-        # Tokenizer: prefer training-args source (CLI parity), but fallback to
-        # local snapshot tokenizer when optional dependencies are missing.
-        tokenizer_source = getattr(self.train_args, "model_name_or_path", None) or str(self.model_dir)
-        tokenizer_fallback = str(self.model_dir)
+        # Tokenizer: the predictor needs word_ids() which requires a fast
+        # tokenizer.  Try local dir first to avoid a network round-trip, and
+        # suppress the sentencepiece byte-fallback warning (cosmetic only).
+        tokenizer_remote = getattr(self.train_args, "model_name_or_path", None) or str(self.model_dir)
+        tokenizer_local = str(self.model_dir)
         candidates: list[tuple[str, bool]] = []
-        for source in (tokenizer_source, tokenizer_fallback):
+        for source in (tokenizer_local, tokenizer_remote):
             candidates.append((source, True))
             candidates.append((source, False))
 
@@ -247,11 +230,18 @@ class ModelBundle:
             seen.add(key)
 
             try:
-                self.tokenizer = AutoTokenizer.from_pretrained(
-                    source,
-                    trust_remote_code=True,
-                    use_fast=use_fast,
-                )
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message=".*byte fallback.*",
+                        category=UserWarning,
+                    )
+                    self.tokenizer = AutoTokenizer.from_pretrained(
+                        source,
+                        trust_remote_code=True,
+                        use_fast=use_fast,
+                    )
                 logger.info("Tokenizer loaded from %s (use_fast=%s)", source, use_fast)
                 break
             except Exception as exc:
@@ -284,6 +274,11 @@ class ModelBundle:
         spec.loader.exec_module(mod)
 
         JointBERT = mod.JointBERT
+
+        # Rename legacy CRF keys *in the checkpoint file* before from_pretrained
+        # so that all parameter names match and no warnings are emitted.
+        _normalize_checkpoint_crf_keys(self.model_dir)
+
         config = AutoConfig.from_pretrained(str(self.model_dir), trust_remote_code=True)
         self.model = JointBERT.from_pretrained(
             str(self.model_dir),
@@ -296,7 +291,6 @@ class ModelBundle:
             req_form_label_lst=self.labels["req_form"],
             slot_label_lst=self.labels["slot"],
         )
-        _restore_legacy_crf_weights(self.model, self.model_dir)
         self.model.to(self.device)
         self.model.eval()
         self._loaded = True

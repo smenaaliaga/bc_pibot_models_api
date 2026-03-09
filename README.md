@@ -88,13 +88,13 @@ Variables clave:
 | Variable | Descripción | Valor por defecto |
 |---|---|---|
 | `MODEL_SOURCE` | `huggingface` o `local` | `huggingface` |
-| `HF_REPO_ID` | Repo de HF (ej. `bcch/pibert`) | `bcch/pibert` |
+| `HF_REPO_ID` | Repo de HF (ej. `BCCh/pibert`) | `BCCh/pibert` |
 | `HF_TOKEN` | Token de HF (solo repos privados) | — |
 | `MODEL_LOCAL_DIR` | Ruta absoluta al directorio local del modelo | — |
 | `MAX_SEQ_LEN` | Longitud máxima de secuencia de entrada | `64` |
 | `DEVICE` | `auto`, `cpu`, `cuda`, `mps` | `auto` |
 | `ROUTER_ENABLED` | Habilita clasificadores de routing | `true` |
-| `ROUTER_HF_REPO_ID` | Repo de HF con artefactos `encoder/`, `heads.pt`, `id2label.json` | `bcch/pibot-intent-router` |
+| `ROUTER_HF_REPO_ID` | Repo de HF con artefactos `encoder/`, `heads.pt`, `id2label.json` | `BCCh/pibot-intent-router` |
 | `ROUTER_HF_TOKEN` | Token de HF para repo de router (solo privado) | — |
 | `APP_PORT` | Puerto del servidor | `8000` |
 | `LOG_LEVEL` | `debug`, `info`, `warning`, `error` | `info` |
@@ -155,10 +155,10 @@ Retorna estado del modelo, estado del router y dispositivo.
   "router_loaded": true,
   "device": "cuda",
   "model_source": "huggingface",
-  "model_hf_repo_id": "bcch/pibert",
+  "model_hf_repo_id": "BCCh/pibert",
   "model_hf_revision": "main",
   "model_hf_commit": "bb5175e1d0366f290077febcff82f2f52f2ab2c0",
-  "router_hf_repo_id": "bcch/pibot-intent-router",
+  "router_hf_repo_id": "BCCh/pibot-intent-router",
   "router_hf_revision": "main",
   "router_hf_commit": "28ef5669144903259df5e756b5b7b6968491fdd8"
 }
@@ -173,15 +173,15 @@ Retorna la versión/fuente efectiva de ambos modelos (repo, revisión y commit d
   "model": {
     "source": "huggingface",
     "loaded": true,
-    "repo_id": "bcch/pibert",
+    "repo_id": "BCCh/pibert",
     "revision": "main",
     "commit": "bb5175e1d0366f290077febcff82f2f52f2ab2c0",
-    "local_dir": "model_cache/snapshots/bcch--pibert"
+    "local_dir": "model_cache/snapshots/BCCh--pibert"
   },
   "router": {
     "source": "huggingface",
     "loaded": true,
-    "repo_id": "bcch/pibot-intent-router",
+    "repo_id": "BCCh/pibot-intent-router",
     "revision": "main",
     "commit": "28ef5669144903259df5e756b5b7b6968491fdd8",
     "local_dir": "model_cache/router_artifacts"
@@ -364,7 +364,7 @@ Requisito: el servidor debe estar encendido (por ejemplo, `uvicorn app.main:app 
 ## Integración de routing
 
 El endpoint usa clasificación real de routing desde
-`bcch/pibot-intent-router` (HF Hub), cargando artefactos de inferencia:
+`BCCh/pibot-intent-router` (HF Hub), cargando artefactos de inferencia:
 
 - `encoder/`
 - `heads.pt`

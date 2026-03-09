@@ -30,7 +30,7 @@ class Settings(BaseSettings):
 
     # ── Model source ──────────────────────────────────────────
     model_source: ModelSource = ModelSource.huggingface
-    hf_repo_id: str = "bcch/pibert"
+    hf_repo_id: str = "BCCh/pibert"
     hf_token: str | None = None
     model_local_dir: str | None = None  # required when model_source == local
 
@@ -40,7 +40,7 @@ class Settings(BaseSettings):
 
     # ── Router model ──────────────────────────────────────────
     router_enabled: bool = True
-    router_hf_repo_id: str = "bcch/pibot-intent-router"
+    router_hf_repo_id: str = "BCCh/pibot-intent-router"
     router_hf_token: str | None = None
 
     # ── Server ────────────────────────────────────────────────

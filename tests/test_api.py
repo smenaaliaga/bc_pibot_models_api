@@ -62,10 +62,10 @@ def _make_fake_bundle():
     b.is_loaded = True
     b.device = "cpu"
     b.labels = _FAKE_LABELS
-    b.hf_repo_id = "bcch/pibert"
+    b.hf_repo_id = "BCCh/pibert"
     b.hf_revision = "main"
     b.hf_commit = "abc123def456"
-    b.model_dir = "model_cache/snapshots/bcch--pibert"
+    b.model_dir = "model_cache/snapshots/BCCh--pibert"
     return b
 
 
@@ -74,7 +74,7 @@ def _make_fake_router_bundle():
     b = MagicMock()
     b.is_loaded = True
     b.labels = _FAKE_ROUTER_LABELS
-    b.hf_repo_id = "bcch/pibot-intent-router"
+    b.hf_repo_id = "BCCh/pibot-intent-router"
     b.hf_revision = "main"
     b.hf_commit = "fedcba654321"
     return b
@@ -130,8 +130,8 @@ async def test_health(client):
     assert body["model_loaded"] is True
     assert body["router_loaded"] is True
     assert body["status"] == "ok"
-    assert body["model_hf_repo_id"] == "bcch/pibert"
-    assert body["router_hf_repo_id"] == "bcch/pibot-intent-router"
+    assert body["model_hf_repo_id"] == "BCCh/pibert"
+    assert body["router_hf_repo_id"] == "BCCh/pibot-intent-router"
 
 
 @pytest.mark.asyncio
@@ -142,13 +142,13 @@ async def test_versions(client):
 
     assert body["model"]["source"] in {"huggingface", "local"}
     assert body["model"]["loaded"] is True
-    assert body["model"]["repo_id"] == "bcch/pibert"
+    assert body["model"]["repo_id"] == "BCCh/pibert"
     assert body["model"]["revision"] == "main"
     assert body["model"]["commit"] == "abc123def456"
 
     assert body["router"]["source"] in {"huggingface", "disabled"}
     assert body["router"]["loaded"] is True
-    assert body["router"]["repo_id"] == "bcch/pibot-intent-router"
+    assert body["router"]["repo_id"] == "BCCh/pibot-intent-router"
     assert body["router"]["revision"] == "main"
     assert body["router"]["commit"] == "fedcba654321"
 
