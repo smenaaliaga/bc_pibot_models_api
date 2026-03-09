@@ -12,6 +12,7 @@ from typing import Dict, List
 import torch
 from huggingface_hub import HfApi, snapshot_download
 from transformers import AutoConfig, AutoModel, AutoTokenizer
+from transformers.utils import logging as hf_logging
 
 from app.config import ModelSource, settings
 
@@ -63,6 +64,27 @@ def _normalize_checkpoint_crf_keys(model_dir: Path) -> None:
             new_state = {_CRF_KEY_MAP.get(k, k): v for k, v in state.items()}
             torch.save(new_state, torch_bin_path)
             logger.info("Renamed legacy CRF keys in %s", torch_bin_path.name)
+
+
+def _load_checkpoint_state_dict(model_dir: Path) -> Dict[str, torch.Tensor]:
+    """Load model weights from local snapshot checkpoint files."""
+    safetensors_path = model_dir / "model.safetensors"
+    if safetensors_path.exists():
+        from safetensors.torch import load_file
+
+        state = load_file(str(safetensors_path))
+        return dict(state)
+
+    torch_bin_path = model_dir / "pytorch_model.bin"
+    if torch_bin_path.exists():
+        state = torch.load(torch_bin_path, map_location="cpu")
+        if isinstance(state, dict) and "state_dict" in state and isinstance(state["state_dict"], dict):
+            state = state["state_dict"]
+        if not isinstance(state, dict):
+            raise RuntimeError(f"Invalid checkpoint format in {torch_bin_path}")
+        return state
+
+    raise FileNotFoundError(f"No checkpoint file found in {model_dir} (expected model.safetensors or pytorch_model.bin)")
 
 # ── Label helpers ────────────────────────────────────────────
 
@@ -261,15 +283,19 @@ class ModelBundle:
         mod = importlib.util.module_from_spec(spec)
         # Ensure relative imports within the snapshot work (e.g. .module)
         import sys
-        mod.__package__ = "modeling_jointbert_pkg"
-        sys.modules[mod.__package__] = mod
+        package_name = "modeling_jointbert_pkg"
+        mod.__package__ = package_name
+        # transformers 5.x may inspect sys.modules[cls.__module__] during model
+        # init; register both canonical and package aliases before execution.
+        sys.modules["modeling_jointbert"] = mod
+        sys.modules[package_name] = mod
         # Also load the companion module.py for the classifiers
         dep_spec = importlib.util.spec_from_file_location(
-            f"{mod.__package__}.module",
+            f"{package_name}.module",
             str(self.model_dir / "module.py"),
         )
         dep_mod = importlib.util.module_from_spec(dep_spec)
-        sys.modules[f"{mod.__package__}.module"] = dep_mod
+        sys.modules[f"{package_name}.module"] = dep_mod
         dep_spec.loader.exec_module(dep_mod)
         spec.loader.exec_module(mod)
 
@@ -280,17 +306,31 @@ class ModelBundle:
         _normalize_checkpoint_crf_keys(self.model_dir)
 
         config = AutoConfig.from_pretrained(str(self.model_dir), trust_remote_code=True)
-        self.model = JointBERT.from_pretrained(
-            str(self.model_dir),
-            config=config,
-            args=self.train_args,
-            calc_mode_label_lst=self.labels["calc_mode"],
-            activity_label_lst=self.labels["activity"],
-            region_label_lst=self.labels["region"],
-            investment_label_lst=self.labels["investment"],
-            req_form_label_lst=self.labels["req_form"],
-            slot_label_lst=self.labels["slot"],
-        )
+        previous_hf_verbosity = hf_logging.get_verbosity()
+        hf_logging.set_verbosity_error()
+        try:
+            self.model = JointBERT(
+                config,
+                args=self.train_args,
+                calc_mode_label_lst=self.labels["calc_mode"],
+                activity_label_lst=self.labels["activity"],
+                region_label_lst=self.labels["region"],
+                investment_label_lst=self.labels["investment"],
+                req_form_label_lst=self.labels["req_form"],
+                slot_label_lst=self.labels["slot"],
+            )
+        finally:
+            hf_logging.set_verbosity(previous_hf_verbosity)
+
+        state_dict = _load_checkpoint_state_dict(self.model_dir)
+        missing_keys, unexpected_keys = self.model.load_state_dict(state_dict, strict=False)
+        if missing_keys or unexpected_keys:
+            logger.warning(
+                "Checkpoint loaded with key mismatch (missing=%d, unexpected=%d)",
+                len(missing_keys),
+                len(unexpected_keys),
+            )
+
         self.model.to(self.device)
         self.model.eval()
         self._loaded = True
