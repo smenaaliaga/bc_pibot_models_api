@@ -18,6 +18,13 @@ except ImportError:  # pragma: no cover - import guard for lightweight test envs
     snapshot_download = None  # type: ignore[assignment]
     HfApi = None  # type: ignore[assignment]
 
+try:
+    from peft import PeftModel, LoraConfig, get_peft_model
+except ImportError:  # pragma: no cover - import guard for lightweight test envs
+    PeftModel = None  # type: ignore[assignment]
+    LoraConfig = None  # type: ignore[assignment]
+    get_peft_model = None  # type: ignore[assignment]
+
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -189,6 +196,101 @@ def _resolve_router_hf_commit(repo_id: str, revision: str, token: str | None) ->
     return getattr(info, "sha", None)
 
 
+def _apply_lora_to_encoder(
+    encoder: Any,
+    train_config: dict[str, Any],
+    artifact_dir: Path,
+    device: str,
+) -> Any:
+    """Apply LoRA weights to encoder if use_lora=true in train_config.
+    
+    CRITICAL: target_modules MUST match what was used during training.
+    If training used ["query", "value"], endpoint must use the same.
+    """
+    use_lora = train_config.get("use_lora", False)
+    
+    if not use_lora:
+        logger.info("LoRA not enabled in train_config. Loading encoder without LoRA.")
+        return encoder
+    
+    if PeftModel is None or LoraConfig is None or get_peft_model is None:
+        logger.warning("peft library not available. Falling back to encoder without LoRA.")
+        return encoder
+    
+    lora_weights_path = artifact_dir / "encoder" / "lora_weights"
+    
+    if not lora_weights_path.exists():
+        logger.warning("use_lora=true but encoder/lora_weights directory not found. Loading without LoRA.")
+        return encoder
+    
+    # Extract LoRA config from train_config with fallback defaults
+    lora_r = int(train_config.get("lora_r", 8))
+    lora_alpha = int(train_config.get("lora_alpha", 16))
+    lora_dropout = float(train_config.get("lora_dropout", 0.1))
+    
+    # CRITICAL: target_modules MUST match training exactly
+    # Read from train_config if available, use defaults as fallback
+    target_modules = train_config.get("target_modules", ["query", "key", "value"])
+    
+    logger.info(
+        "Applying LoRA to encoder: r=%d, alpha=%d, dropout=%.2f, target_modules=%s",
+        lora_r,
+        lora_alpha,
+        lora_dropout,
+        target_modules,
+    )
+    
+    try:
+        # Get the underlying transformer model from SentenceTransformer
+        base_model = encoder[0].auto_model
+        
+        # Configure LoRA - MUST MATCH training configuration exactly
+        lora_config = LoraConfig(
+            r=lora_r,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            bias="none",
+            task_type="FEATURE_EXTRACTION",
+            target_modules=target_modules,  # Use the same modules as training
+        )
+        
+        # Apply LoRA configuration
+        peft_model = get_peft_model(base_model, lora_config)
+        peft_model.eval()  # Set to eval mode BEFORE loading weights
+        
+        # Load LoRA weights from adapter_model.bin
+        adapter_bin_path = lora_weights_path / "adapter_model.bin"
+        if adapter_bin_path.exists():
+            # Try both load_adapter and load_state_dict methods
+            try:
+                # Method 1: Use load_adapter (recommended for peft models)
+                peft_model.load_adapter(str(lora_weights_path), adapter_name="default")
+                logger.info("LoRA weights loaded using load_adapter")
+            except Exception as load_adapter_error:
+                # Method 2: Fall back to load_state_dict
+                logger.debug("load_adapter failed, trying load_state_dict: %s", load_adapter_error)
+                lora_state = torch.load(adapter_bin_path, map_location=device)
+                peft_model.load_state_dict(lora_state, strict=False)
+                logger.info("LoRA weights loaded using load_state_dict")
+        else:
+            logger.warning("adapter_model.bin not found at %s", adapter_bin_path)
+            return encoder
+        
+        peft_model.eval()  # Ensure eval mode after loading
+        
+        # Replace the base model in the encoder
+        encoder[0].auto_model = peft_model
+        
+    except Exception as exc:
+        logger.warning(
+            "Failed to apply LoRA weights: %s. Falling back to encoder without LoRA.",
+            exc,
+            exc_info=True,
+        )
+    
+    return encoder
+
+
 class RouterBundle:
     """Encapsulates HF encoder + multitask heads used for routing decisions."""
 
@@ -245,7 +347,16 @@ class RouterBundle:
         self.labels = _build_labels(id2label_raw)
         self.max_length = int(train_config_raw.get("max_length", 24))
 
+        # Load encoder (SentenceTransformer)
         self.embedding_model = SentenceTransformer(str(encoder_dir), device=self.device)
+        
+        # Apply LoRA if enabled in train_config
+        self.embedding_model = _apply_lora_to_encoder(
+            encoder=self.embedding_model,
+            train_config=train_config_raw,
+            artifact_dir=artifact_dir,
+            device=self.device,
+        )
 
         raw_state = torch.load(heads_path, map_location=self.device)
         if not isinstance(raw_state, dict):
