@@ -4,10 +4,12 @@ uvicorn[standard]>=0.30,<1
 pydantic>=2.0,<3
 pydantic-settings>=2.0,<3
 
-# ML – JointBERT
-torch>=2.5,<3
-transformers==4.46.0
-huggingface-hub>=0.26,<1
+# ML – JointBERT + Router
+# IMPORTANT: transformers MUST stay on 4.46.x — DeBERTa-v3 forward pass changed
+# in transformers 5.x, breaking the fine-tuned CRF slot tagger (all-O output).
+torch>=2.2,<3
+transformers>=4.46,<4.47
+huggingface-hub>=0.24,<1
 safetensors>=0.4
 protobuf>=4.25,<6
 sentencepiece>=0.2,<1
@@ -15,6 +17,7 @@ pytorch-crf>=0.7,<1
 
 # ML – Router (multitask encoder + torch heads)
 sentence-transformers>=5.2,<6
+peft>=0.18,<1  # LoRA support for SetFit models
 
 # Observability
 prometheus-fastapi-instrumentator>=7.0,<8
