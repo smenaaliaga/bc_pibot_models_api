@@ -18,6 +18,20 @@ except ImportError:  # pragma: no cover - import guard for lightweight test envs
     snapshot_download = None  # type: ignore[assignment]
     HfApi = None  # type: ignore[assignment]
 
+# ── Shim: peft ≥0.18 assumes torch.distributed.tensor.DTensor exists when
+#    torch ≥ 2.5 and distributed.is_available(), but the submodule is absent on
+#    Windows CPU-only builds.  Add a harmless stub so the isinstance() check in
+#    peft/tuners/tuners_utils.py returns False instead of crashing.
+if torch is not None and not hasattr(getattr(torch, "distributed", None), "tensor"):
+    import types as _types
+    _dt_mod = _types.ModuleType("torch.distributed.tensor")
+
+    class _FakeDTensor:
+        pass
+
+    _dt_mod.DTensor = _FakeDTensor  # type: ignore[attr-defined]
+    torch.distributed.tensor = _dt_mod  # type: ignore[attr-defined]
+
 try:
     from peft import PeftModel, LoraConfig, get_peft_model
 except ImportError:  # pragma: no cover - import guard for lightweight test envs
@@ -203,91 +217,130 @@ def _apply_lora_to_encoder(
     device: str,
 ) -> Any:
     """Apply LoRA weights to encoder if use_lora=true in train_config.
-    
-    CRITICAL: target_modules MUST match what was used during training.
-    If training used ["query", "value"], endpoint must use the same.
+
+    Loading strategy:
+    1. Use ``PeftModel.from_pretrained()`` on the base transformer – this reads
+       ``adapter_config.json`` written by peft during training so the LoRA
+       topology (target_modules, r, alpha, …) is reproduced exactly.
+    2. If ``from_pretrained`` fails (e.g. missing config), fall back to manually
+       building the LoRA config from train_config.json / adapter_config.json and
+       loading the state-dict.
+
+    This mirrors the *save* side of ``SharedEncoder.save()`` in the training
+    repo, which calls ``PeftModel.save_pretrained(path/lora_weights)`` followed
+    by ``SentenceTransformer.save(path)``.
     """
     use_lora = train_config.get("use_lora", False)
-    
+
     if not use_lora:
         logger.info("LoRA not enabled in train_config. Loading encoder without LoRA.")
         return encoder
-    
+
     if PeftModel is None or LoraConfig is None or get_peft_model is None:
         logger.warning("peft library not available. Falling back to encoder without LoRA.")
         return encoder
-    
+
     lora_weights_path = artifact_dir / "encoder" / "lora_weights"
-    
+
     if not lora_weights_path.exists():
         logger.warning("use_lora=true but encoder/lora_weights directory not found. Loading without LoRA.")
         return encoder
-    
-    # Extract LoRA config from train_config with fallback defaults
-    lora_r = int(train_config.get("lora_r", 8))
-    lora_alpha = int(train_config.get("lora_alpha", 16))
-    lora_dropout = float(train_config.get("lora_dropout", 0.1))
-    
-    # CRITICAL: target_modules MUST match training exactly
-    # Read from train_config if available, use defaults as fallback
-    target_modules = train_config.get("target_modules", ["query", "key", "value"])
-    
-    logger.info(
-        "Applying LoRA to encoder: r=%d, alpha=%d, dropout=%.2f, target_modules=%s",
-        lora_r,
-        lora_alpha,
-        lora_dropout,
-        target_modules,
-    )
-    
+
+    # Verify adapter weights exist
+    has_bin = (lora_weights_path / "adapter_model.bin").exists()
+    has_safetensors = (lora_weights_path / "adapter_model.safetensors").exists()
+    if not has_bin and not has_safetensors:
+        logger.warning("No adapter weight files found in %s. Loading without LoRA.", lora_weights_path)
+        return encoder
+
     try:
-        # Get the underlying transformer model from SentenceTransformer
         base_model = encoder[0].auto_model
-        
-        # Configure LoRA - MUST MATCH training configuration exactly
+
+        # --- Strategy 1: PeftModel.from_pretrained (preferred) ---
+        # This reads adapter_config.json written by peft during training,
+        # so target_modules / r / alpha / task_type are reproduced exactly
+        # without us having to guess or duplicate them.
+        try:
+            peft_model = PeftModel.from_pretrained(
+                base_model,
+                str(lora_weights_path),
+            )
+            peft_model.eval()
+            encoder[0].auto_model = peft_model
+            logger.info(
+                "LoRA applied via PeftModel.from_pretrained from %s",
+                lora_weights_path,
+            )
+            return encoder
+        except Exception as from_pretrained_err:
+            logger.debug(
+                "PeftModel.from_pretrained failed (%s), falling back to manual config.",
+                from_pretrained_err,
+            )
+
+        # --- Strategy 2: manual LoraConfig + load state-dict ---
+        # Read adapter_config.json as primary source; fall back to train_config.
+        adapter_cfg: dict[str, Any] = {}
+        adapter_cfg_path = lora_weights_path / "adapter_config.json"
+        if adapter_cfg_path.exists():
+            adapter_cfg = _load_json_file(adapter_cfg_path)
+
+        lora_r = int(adapter_cfg.get("r", train_config.get("lora_r", 8)))
+        lora_alpha = int(adapter_cfg.get("lora_alpha", train_config.get("lora_alpha", 16)))
+        lora_dropout = float(adapter_cfg.get("lora_dropout", train_config.get("lora_dropout", 0.1)))
+        # Training hardcodes ["query", "value"] with task_type=None, bias="none"
+        target_modules = adapter_cfg.get(
+            "target_modules",
+            train_config.get("target_modules", ["query", "value"]),
+        )
+        task_type = adapter_cfg.get(
+            "task_type",
+            train_config.get("lora_task_type", None),
+        )
+        bias = adapter_cfg.get("bias", "none")
+
+        logger.info(
+            "Applying LoRA manually: r=%d, alpha=%d, dropout=%.2f, "
+            "target_modules=%s, task_type=%s, bias=%s",
+            lora_r, lora_alpha, lora_dropout, target_modules, task_type, bias,
+        )
+
         lora_config = LoraConfig(
             r=lora_r,
             lora_alpha=lora_alpha,
             lora_dropout=lora_dropout,
-            bias="none",
-            task_type="FEATURE_EXTRACTION",
-            target_modules=target_modules,  # Use the same modules as training
+            bias=bias,
+            task_type=task_type,
+            target_modules=target_modules,
         )
-        
-        # Apply LoRA configuration
+
         peft_model = get_peft_model(base_model, lora_config)
-        peft_model.eval()  # Set to eval mode BEFORE loading weights
-        
-        # Load LoRA weights from adapter_model.bin
-        adapter_bin_path = lora_weights_path / "adapter_model.bin"
-        if adapter_bin_path.exists():
-            # Try both load_adapter and load_state_dict methods
-            try:
-                # Method 1: Use load_adapter (recommended for peft models)
-                peft_model.load_adapter(str(lora_weights_path), adapter_name="default")
-                logger.info("LoRA weights loaded using load_adapter")
-            except Exception as load_adapter_error:
-                # Method 2: Fall back to load_state_dict
-                logger.debug("load_adapter failed, trying load_state_dict: %s", load_adapter_error)
-                lora_state = torch.load(adapter_bin_path, map_location=device)
-                peft_model.load_state_dict(lora_state, strict=False)
-                logger.info("LoRA weights loaded using load_state_dict")
+
+        # Load weights
+        weight_path = (
+            lora_weights_path / "adapter_model.bin"
+            if has_bin
+            else lora_weights_path / "adapter_model.safetensors"
+        )
+        if has_bin:
+            lora_state = torch.load(weight_path, map_location=device)
         else:
-            logger.warning("adapter_model.bin not found at %s", adapter_bin_path)
-            return encoder
-        
-        peft_model.eval()  # Ensure eval mode after loading
-        
-        # Replace the base model in the encoder
+            from safetensors.torch import load_file
+            lora_state = load_file(str(weight_path))
+
+        peft_model.load_state_dict(lora_state, strict=False)
+        peft_model.eval()
+
         encoder[0].auto_model = peft_model
-        
+        logger.info("LoRA applied via manual config + state_dict from %s", lora_weights_path)
+
     except Exception as exc:
         logger.warning(
             "Failed to apply LoRA weights: %s. Falling back to encoder without LoRA.",
             exc,
             exc_info=True,
         )
-    
+
     return encoder
 
 
