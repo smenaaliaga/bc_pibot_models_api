@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 import json
+import re
 from typing import Any, Dict, List
 
 try:
@@ -18,30 +19,11 @@ except ImportError:  # pragma: no cover - import guard for lightweight test envs
     snapshot_download = None  # type: ignore[assignment]
     HfApi = None  # type: ignore[assignment]
 
-# ── Shim: peft ≥0.18 assumes torch.distributed.tensor.DTensor exists when
-#    torch ≥ 2.5 and distributed.is_available(), but the submodule is absent on
-#    Windows CPU-only builds.  Add a harmless stub so the isinstance() check in
-#    peft/tuners/tuners_utils.py returns False instead of crashing.
-if torch is not None and not hasattr(getattr(torch, "distributed", None), "tensor"):
-    import types as _types
-    _dt_mod = _types.ModuleType("torch.distributed.tensor")
-
-    class _FakeDTensor:
-        pass
-
-    _dt_mod.DTensor = _FakeDTensor  # type: ignore[attr-defined]
-    torch.distributed.tensor = _dt_mod  # type: ignore[attr-defined]
-
-try:
-    from peft import PeftModel, LoraConfig, get_peft_model
-except ImportError:  # pragma: no cover - import guard for lightweight test envs
-    PeftModel = None  # type: ignore[assignment]
-    LoraConfig = None  # type: ignore[assignment]
-    get_peft_model = None  # type: ignore[assignment]
-
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+_CACHE_META_FILENAME = ".hf_cache_meta.json"
 
 _TASKS: tuple[str, ...] = ("macro", "intent", "context")
 
@@ -91,6 +73,45 @@ def _load_json_file(path: Path) -> dict[str, Any]:
         return json.load(handle)
 
 
+def _load_cache_meta(local_dir: Path) -> dict[str, Any]:
+    meta_path = local_dir / _CACHE_META_FILENAME
+    if not meta_path.exists():
+        return {}
+    try:
+        with meta_path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:
+        logger.warning("Could not read router cache metadata at %s", meta_path, exc_info=True)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_cache_meta(local_dir: Path, *, repo_id: str, revision: str, commit: str | None) -> None:
+    local_dir.mkdir(parents=True, exist_ok=True)
+    meta_path = local_dir / _CACHE_META_FILENAME
+    payload = {
+        "repo_id": repo_id,
+        "revision": revision,
+        "commit": commit or "",
+    }
+    with meta_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+
+def _read_hf_cache_ref_commit(repo_id: str, revision: str) -> str | None:
+    """Read commit from local HF refs cache if available."""
+    repo_cache_dir = Path("model_cache") / f"models--{repo_id.replace('/', '--')}" / "refs"
+    ref_path = repo_cache_dir / revision
+    if not ref_path.exists():
+        return None
+    try:
+        value = ref_path.read_text(encoding="utf-8").strip()
+    except Exception:
+        logger.warning("Could not read router HF ref commit from %s", ref_path, exc_info=True)
+        return None
+    return value or None
+
+
 def _build_labels(id2label_raw: dict[str, Any]) -> Dict[str, List[str | int]]:
     labels: Dict[str, List[str | int]] = {}
     for task in _TASKS:
@@ -112,68 +133,118 @@ def _build_labels(id2label_raw: dict[str, Any]) -> Dict[str, List[str | int]]:
 
         labels[task] = task_labels
 
-    if set(labels.keys()) != set(_TASKS):
-        return ROUTER_LABELS
+    missing_tasks = set(_TASKS) - set(labels.keys())
+    if missing_tasks:
+        raise RuntimeError(f"Router id2label.json missing tasks: {sorted(missing_tasks)}")
 
     return labels
 
 
-def _extract_head_parameters(raw_state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+def _extract_head_parameters(raw_state: dict[str, Any]) -> dict[str, list[tuple[Any, Any]]]:
     state = raw_state.get("state_dict", raw_state)
-    weights: dict[str, Any] = {}
-    biases: dict[str, Any] = {}
+    task_layers: dict[str, list[tuple[Any, Any]]] = {}
 
     if all(task in state and isinstance(state[task], dict) for task in _TASKS):
         for task in _TASKS:
             task_state = state[task]
             weight = task_state.get("weight")
             bias = task_state.get("bias")
-            if torch is not None and isinstance(weight, torch.Tensor):
-                weights[task] = weight
-            if torch is not None and isinstance(bias, torch.Tensor):
-                biases[task] = bias
+            if (
+                torch is not None
+                and isinstance(weight, torch.Tensor)
+                and isinstance(bias, torch.Tensor)
+            ):
+                task_layers[task] = [(weight, bias)]
 
-    if set(weights.keys()) == set(_TASKS):
-        return weights, biases
+    if set(task_layers.keys()) == set(_TASKS):
+        return task_layers
 
     flat_state: dict[str, Any] = {}
     for key, value in state.items():
         if torch is not None and isinstance(value, torch.Tensor):
             flat_state[key] = value
 
-    def find_key(task_name: str, suffix: str) -> str | None:
-        task_name_lower = task_name.lower()
-        candidates: list[str] = []
-        for key in flat_state:
-            key_lower = key.lower()
-            if not key_lower.endswith(suffix):
-                continue
-            if (
-                f".{task_name_lower}." in key_lower
-                or f"_{task_name_lower}_" in key_lower
-                or key_lower.startswith(f"{task_name_lower}.")
-                or key_lower.startswith(f"heads.{task_name_lower}.")
-                or f"{task_name_lower}{suffix}" in key_lower
-            ):
-                candidates.append(key)
-        if not candidates:
-            return None
-        candidates.sort(key=len)
-        return candidates[0]
-
     for task in _TASKS:
-        weight_key = find_key(task, "weight")
-        if weight_key is None:
+        pattern_w = re.compile(rf"^heads\.{re.escape(task)}\.classifier\.(\d+)\.weight$", re.IGNORECASE)
+        pattern_b = re.compile(rf"^heads\.{re.escape(task)}\.classifier\.(\d+)\.bias$", re.IGNORECASE)
+
+        by_idx: dict[int, dict[str, Any]] = {}
+        for key, value in flat_state.items():
+            match_w = pattern_w.match(key)
+            if match_w is not None:
+                idx = int(match_w.group(1))
+                by_idx.setdefault(idx, {})["weight"] = value
+                continue
+
+            match_b = pattern_b.match(key)
+            if match_b is not None:
+                idx = int(match_b.group(1))
+                by_idx.setdefault(idx, {})["bias"] = value
+
+        if not by_idx:
             continue
-        weights[task] = flat_state[weight_key]
-        bias_key = find_key(task, "bias")
-        if bias_key is not None:
-            biases[task] = flat_state[bias_key]
 
-    return weights, biases
+        layers: list[tuple[Any, Any]] = []
+        for idx in sorted(by_idx.keys()):
+            weight = by_idx[idx].get("weight")
+            bias = by_idx[idx].get("bias")
+            if weight is None or bias is None:
+                raise RuntimeError(f"Incomplete router classifier layer for task '{task}' at index {idx}")
+            layers.append((weight, bias))
+
+        task_layers[task] = layers
+
+    if set(task_layers.keys()) != set(_TASKS):
+        raise RuntimeError("Could not extract all multitask classifier layers from heads.pt")
+
+    return task_layers
 
 
-def _download_router_artifacts() -> Path:
+def _extract_top_k(
+    probs: torch.Tensor,
+    id2label_task: dict[int, str | int],
+    top_k: int,
+) -> list[dict[str, float | str | int]]:
+    """Return ranked predictions for one task, matching training-time helper behavior."""
+    k = min(max(top_k, 1), int(probs.shape[0]))
+    top_probs, top_ids = torch.topk(probs, k=k, dim=-1)
+    ranked: list[dict[str, float | str | int]] = []
+    for prob, class_id in zip(top_probs.tolist(), top_ids.tolist()):
+        class_index = int(class_id)
+        if class_index not in id2label_task:
+            raise RuntimeError(f"Router class index {class_index} missing in label map")
+        label = id2label_task[class_index]
+        ranked.append({"label": label, "score": float(prob)})
+    return ranked
+
+
+def _disable_encoder_adapters(encoder_dir: Path) -> None:
+    """Disable adapter autoload by renaming adapter files if present.
+
+    Some exported encoder artifacts may include adapter files even when runtime
+    inference should run with the base encoder only. ``transformers`` auto-detects
+    these files and attempts to inject adapter modules, which can fail on CPU-only Windows
+    builds. Renaming them keeps the base encoder load path deterministic.
+    """
+    adapter_files = (
+        "adapter_config.json",
+        "adapter_model.safetensors",
+        "adapter_model.bin",
+    )
+    for filename in adapter_files:
+        path = encoder_dir / filename
+        if not path.exists():
+            continue
+
+        disabled_path = encoder_dir / f"{filename}.disabled"
+        if disabled_path.exists():
+            continue
+
+        path.rename(disabled_path)
+        logger.warning("Disabled router adapter file for base-encoder inference: %s", path)
+
+
+def _download_router_artifacts(*, revision: str, expected_commit: str | None) -> Path:
     if snapshot_download is None:
         raise RuntimeError("huggingface-hub is required to load router artifacts")
 
@@ -186,17 +257,59 @@ def _download_router_artifacts() -> Path:
         local_dir / "heads.pt",
         local_dir / "encoder",
     ]
-    if all(path.exists() for path in marker_files):
-        logger.info("Using cached router artifacts: %s", local_dir)
-        return local_dir
+    has_valid_cache = all(path.exists() for path in marker_files)
+    if has_valid_cache:
+        if not settings.hf_sync_on_startup:
+            logger.info("Using cached router artifacts: %s", local_dir)
+            return local_dir
+
+        if expected_commit is None:
+            logger.warning(
+                "HF commit resolution failed for router %s@%s. Reusing cache at %s",
+                settings.router_hf_repo_id,
+                revision,
+                local_dir,
+            )
+            return local_dir
+
+        cached_commit = _load_cache_meta(local_dir).get("commit") or _read_hf_cache_ref_commit(
+            settings.router_hf_repo_id,
+            revision,
+        )
+        if cached_commit is None:
+            logger.warning(
+                "Cached router commit is unknown for %s at %s. Reusing cache without forced refresh.",
+                settings.router_hf_repo_id,
+                local_dir,
+            )
+            return local_dir
+        if cached_commit == expected_commit:
+            logger.info("Using router cache aligned with HF commit %s at %s", expected_commit, local_dir)
+            return local_dir
+
+        logger.info(
+            "Refreshing router cache due to HF commit change: cached=%s remote=%s",
+            cached_commit or "unknown",
+            expected_commit,
+        )
 
     snapshot_kwargs: dict[str, Any] = {
         "repo_id": settings.router_hf_repo_id,
+        "revision": revision,
         "token": settings.router_hf_token,
         "cache_dir": "model_cache",
         "local_dir": str(local_dir),
+        "force_download": bool(has_valid_cache and expected_commit is not None),
     }
-    return Path(snapshot_download(**snapshot_kwargs))
+    downloaded_dir = Path(snapshot_download(**snapshot_kwargs))
+    if settings.hf_sync_on_startup:
+        _save_cache_meta(
+            downloaded_dir,
+            repo_id=settings.router_hf_repo_id,
+            revision=revision,
+            commit=expected_commit,
+        )
+    return downloaded_dir
 
 
 def _resolve_router_hf_commit(repo_id: str, revision: str, token: str | None) -> str | None:
@@ -210,147 +323,12 @@ def _resolve_router_hf_commit(repo_id: str, revision: str, token: str | None) ->
     return getattr(info, "sha", None)
 
 
-def _apply_lora_to_encoder(
-    encoder: Any,
-    train_config: dict[str, Any],
-    artifact_dir: Path,
-    device: str,
-) -> Any:
-    """Apply LoRA weights to encoder if use_lora=true in train_config.
-
-    Loading strategy:
-    1. Use ``PeftModel.from_pretrained()`` on the base transformer – this reads
-       ``adapter_config.json`` written by peft during training so the LoRA
-       topology (target_modules, r, alpha, …) is reproduced exactly.
-    2. If ``from_pretrained`` fails (e.g. missing config), fall back to manually
-       building the LoRA config from train_config.json / adapter_config.json and
-       loading the state-dict.
-
-    This mirrors the *save* side of ``SharedEncoder.save()`` in the training
-    repo, which calls ``PeftModel.save_pretrained(path/lora_weights)`` followed
-    by ``SentenceTransformer.save(path)``.
-    """
-    use_lora = train_config.get("use_lora", False)
-
-    if not use_lora:
-        logger.info("LoRA not enabled in train_config. Loading encoder without LoRA.")
-        return encoder
-
-    if PeftModel is None or LoraConfig is None or get_peft_model is None:
-        logger.warning("peft library not available. Falling back to encoder without LoRA.")
-        return encoder
-
-    lora_weights_path = artifact_dir / "encoder" / "lora_weights"
-
-    if not lora_weights_path.exists():
-        logger.warning("use_lora=true but encoder/lora_weights directory not found. Loading without LoRA.")
-        return encoder
-
-    # Verify adapter weights exist
-    has_bin = (lora_weights_path / "adapter_model.bin").exists()
-    has_safetensors = (lora_weights_path / "adapter_model.safetensors").exists()
-    if not has_bin and not has_safetensors:
-        logger.warning("No adapter weight files found in %s. Loading without LoRA.", lora_weights_path)
-        return encoder
-
-    try:
-        base_model = encoder[0].auto_model
-
-        # --- Strategy 1: PeftModel.from_pretrained (preferred) ---
-        # This reads adapter_config.json written by peft during training,
-        # so target_modules / r / alpha / task_type are reproduced exactly
-        # without us having to guess or duplicate them.
-        try:
-            peft_model = PeftModel.from_pretrained(
-                base_model,
-                str(lora_weights_path),
-            )
-            peft_model.eval()
-            encoder[0].auto_model = peft_model
-            logger.info(
-                "LoRA applied via PeftModel.from_pretrained from %s",
-                lora_weights_path,
-            )
-            return encoder
-        except Exception as from_pretrained_err:
-            logger.debug(
-                "PeftModel.from_pretrained failed (%s), falling back to manual config.",
-                from_pretrained_err,
-            )
-
-        # --- Strategy 2: manual LoraConfig + load state-dict ---
-        # Read adapter_config.json as primary source; fall back to train_config.
-        adapter_cfg: dict[str, Any] = {}
-        adapter_cfg_path = lora_weights_path / "adapter_config.json"
-        if adapter_cfg_path.exists():
-            adapter_cfg = _load_json_file(adapter_cfg_path)
-
-        lora_r = int(adapter_cfg.get("r", train_config.get("lora_r", 8)))
-        lora_alpha = int(adapter_cfg.get("lora_alpha", train_config.get("lora_alpha", 16)))
-        lora_dropout = float(adapter_cfg.get("lora_dropout", train_config.get("lora_dropout", 0.1)))
-        # Training hardcodes ["query", "value"] with task_type=None, bias="none"
-        target_modules = adapter_cfg.get(
-            "target_modules",
-            train_config.get("target_modules", ["query", "value"]),
-        )
-        task_type = adapter_cfg.get(
-            "task_type",
-            train_config.get("lora_task_type", None),
-        )
-        bias = adapter_cfg.get("bias", "none")
-
-        logger.info(
-            "Applying LoRA manually: r=%d, alpha=%d, dropout=%.2f, "
-            "target_modules=%s, task_type=%s, bias=%s",
-            lora_r, lora_alpha, lora_dropout, target_modules, task_type, bias,
-        )
-
-        lora_config = LoraConfig(
-            r=lora_r,
-            lora_alpha=lora_alpha,
-            lora_dropout=lora_dropout,
-            bias=bias,
-            task_type=task_type,
-            target_modules=target_modules,
-        )
-
-        peft_model = get_peft_model(base_model, lora_config)
-
-        # Load weights
-        weight_path = (
-            lora_weights_path / "adapter_model.bin"
-            if has_bin
-            else lora_weights_path / "adapter_model.safetensors"
-        )
-        if has_bin:
-            lora_state = torch.load(weight_path, map_location=device)
-        else:
-            from safetensors.torch import load_file
-            lora_state = load_file(str(weight_path))
-
-        peft_model.load_state_dict(lora_state, strict=False)
-        peft_model.eval()
-
-        encoder[0].auto_model = peft_model
-        logger.info("LoRA applied via manual config + state_dict from %s", lora_weights_path)
-
-    except Exception as exc:
-        logger.warning(
-            "Failed to apply LoRA weights: %s. Falling back to encoder without LoRA.",
-            exc,
-            exc_info=True,
-        )
-
-    return encoder
-
-
 class RouterBundle:
     """Encapsulates HF encoder + multitask heads used for routing decisions."""
 
     def __init__(self) -> None:
         self.embedding_model: Any | None = None
-        self.head_weights: dict[str, Any] = {}
-        self.head_biases: dict[str, Any] = {}
+        self.head_layers: dict[str, list[tuple[Any, Any]]] = {}
         self.labels: Dict[str, List[str | int]] = ROUTER_LABELS
         self.max_length: int = 24
         self.device: str = "cpu"
@@ -382,7 +360,7 @@ class RouterBundle:
         )
 
         self.device = _resolve_device(settings.device)
-        artifact_dir = _download_router_artifacts()
+        artifact_dir = _download_router_artifacts(revision=self.hf_revision, expected_commit=self.hf_commit)
 
         id2label_path = artifact_dir / "id2label.json"
         train_config_path = artifact_dir / "train_config.json"
@@ -400,40 +378,34 @@ class RouterBundle:
         self.labels = _build_labels(id2label_raw)
         self.max_length = int(train_config_raw.get("max_length", 24))
 
+        # Ensure encoder loads as plain base model (no adapter autoload).
+        _disable_encoder_adapters(encoder_dir)
+
         # Load encoder (SentenceTransformer)
         self.embedding_model = SentenceTransformer(str(encoder_dir), device=self.device)
-        
-        # Apply LoRA if enabled in train_config
-        self.embedding_model = _apply_lora_to_encoder(
-            encoder=self.embedding_model,
-            train_config=train_config_raw,
-            artifact_dir=artifact_dir,
-            device=self.device,
-        )
 
-        raw_state = torch.load(heads_path, map_location=self.device)
+        # Load multitask heads
+        raw_state = torch.load(heads_path, map_location=self.device, weights_only=True)
         if not isinstance(raw_state, dict):
             raise RuntimeError("Invalid heads.pt format: expected a dictionary state")
 
-        weights, biases = _extract_head_parameters(raw_state)
-        if set(weights.keys()) != set(_TASKS):
-            raise RuntimeError("Could not extract all multitask head weights from heads.pt")
+        raw_layers = _extract_head_parameters(raw_state)
 
-        head_weights: dict[str, Any] = {}
-        head_biases: dict[str, Any] = {}
+        normalized_layers: dict[str, list[tuple[Any, Any]]] = {}
         for task in _TASKS:
-            weight_tensor = weights[task].to(self.device).float().detach()
-            bias_tensor = biases.get(task)
-            if bias_tensor is None:
-                bias_tensor = torch.zeros(weight_tensor.shape[0], device=self.device)
-            else:
-                bias_tensor = bias_tensor.to(self.device).float().detach()
+            task_layers = raw_layers.get(task)
+            if not task_layers:
+                raise RuntimeError(f"Router heads missing task '{task}'")
 
-            head_weights[task] = weight_tensor
-            head_biases[task] = bias_tensor
+            norm_task_layers: list[tuple[Any, Any]] = []
+            for weight, bias in task_layers:
+                weight_tensor = weight.to(self.device).float().detach()
+                bias_tensor = bias.to(self.device).float().detach()
+                norm_task_layers.append((weight_tensor, bias_tensor))
 
-        self.head_weights = head_weights
-        self.head_biases = head_biases
+            normalized_layers[task] = norm_task_layers
+
+        self.head_layers = normalized_layers
         self._loaded = True
         logger.info(
             "Router source: repo=%s revision=%s commit=%s",
@@ -452,8 +424,29 @@ router_bundle = RouterBundle()
 
 
 def route(bundle: RouterBundle, text: str) -> dict:
-    """Compute routing predictions for a single text."""
-    if bundle.embedding_model is None or not bundle.head_weights:
+    """Compute routing predictions for a single text (endpoint-compatible format)."""
+    detailed = route_detailed(bundle, text, top_k=1)
+
+    output: dict[str, str | int | float] = {}
+    for task in _TASKS:
+        best = detailed[task]
+        label = best["label"]
+        if task == "macro":
+            label = _coerce_macro_label(label)
+
+        output[task] = label
+        output[f"{task}_confidence"] = float(best["score"])
+
+    return output
+
+
+def route_detailed(bundle: RouterBundle, text: str, top_k: int = 3) -> dict[str, dict[str, object]]:
+    """Compute routing predictions with top-k details per task.
+
+    This mirrors the logic used in ``revision/predict.py`` so training-time and
+    endpoint-time router inference share the same decision path.
+    """
+    if bundle.embedding_model is None or not bundle.head_layers:
         raise RuntimeError("Router model is not loaded")
 
     embedding = bundle.embedding_model.encode(
@@ -465,23 +458,38 @@ def route(bundle: RouterBundle, text: str) -> dict:
         embedding = embedding.unsqueeze(0)
     embedding = embedding.to(bundle.device).float()
 
-    output: dict[str, str | int | float] = {}
+    results: dict[str, dict[str, object]] = {}
     for task in _TASKS:
-        weight = bundle.head_weights[task]
-        bias = bundle.head_biases[task]
-        logits = torch.matmul(embedding, weight.transpose(0, 1)) + bias
+        task_layers = bundle.head_layers.get(task)
+        if not task_layers:
+            raise RuntimeError(f"Router head layers missing task '{task}'")
+
+        hidden = embedding
+        for layer_index, (weight, bias) in enumerate(task_layers):
+            hidden = torch.matmul(hidden, weight.transpose(0, 1)) + bias
+            if layer_index < len(task_layers) - 1:
+                hidden = torch.relu(hidden)
+
+        logits = hidden
         probs = torch.softmax(logits.squeeze(0), dim=-1)
-        pred_idx = int(torch.argmax(probs).item())
 
-        labels = bundle.labels.get(task, ROUTER_LABELS[task])
-        if pred_idx >= len(labels):
-            raise RuntimeError(f"Predicted index out of bounds for router task '{task}'")
+        labels = bundle.labels.get(task)
+        if labels is None:
+            raise RuntimeError(f"Router labels missing task '{task}'")
+        if int(probs.shape[0]) != len(labels):
+            raise RuntimeError(
+                f"Router head/label mismatch for task '{task}': head_dim={int(probs.shape[0])} labels={len(labels)}"
+            )
+        id2label_task = {index: label for index, label in enumerate(labels)}
+        ranked = _extract_top_k(probs=probs, id2label_task=id2label_task, top_k=top_k)
+        if not ranked:
+            raise RuntimeError(f"No predictions produced for router task '{task}'")
 
-        label = labels[pred_idx]
-        if task == "macro":
-            label = _coerce_macro_label(label)
+        best = ranked[0]
+        results[task] = {
+            "label": best["label"],
+            "score": float(best["score"]),
+            "top_k": ranked,
+        }
 
-        output[task] = label
-        output[f"{task}_confidence"] = round(float(probs[pred_idx].item()), 6)
-
-    return output
+    return results

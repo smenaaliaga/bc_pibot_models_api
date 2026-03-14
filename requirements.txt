@@ -17,7 +17,6 @@ pytorch-crf>=0.7,<1
 
 # ML – Router (multitask encoder + torch heads)
 sentence-transformers>=5.2,<6
-peft>=0.18,<1  # LoRA support for SetFit models
 
 # Observability
 prometheus-fastapi-instrumentator>=7.0,<8

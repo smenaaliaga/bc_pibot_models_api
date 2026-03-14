@@ -10,7 +10,6 @@ Entrega clasificación de decisiones de routing e intención multi-head + slot f
 
 - **Inferencia unificada** (`POST /predict`, `POST /predict/batch`)
 - **Router multitarea real** – encoder `sentence-transformers` + cabezas `torch` (`macro`, `intent`, `context`) cargadas desde HF
-- **Soporte LoRA** – carga automática de modelos SetFit entrenados con LoRA, manteniendo compatibilidad con modelos sin LoRA
 - **Interpretación JointBERT** – clasificación de intención de 5 cabezas + slot filling BIO (NER)
 - **Modelo desde HF Hub o local** – controlado por la variable `MODEL_SOURCE`
 - **Listo para Docker** – build multi-stage (CPU y GPU)
@@ -91,6 +90,7 @@ Variables clave:
 | `MODEL_SOURCE` | `huggingface` o `local` | `huggingface` |
 | `HF_REPO_ID` | Repo de HF (ej. `BCCh/pibert`) | `BCCh/pibert` |
 | `HF_TOKEN` | Token de HF (solo repos privados) | — |
+| `HF_SYNC_ON_STARTUP` | Si es `true`, compara commits remotos y refresca `model_cache` cuando cambia HF (modelo y router) | `true` |
 | `MODEL_LOCAL_DIR` | Ruta absoluta al directorio local del modelo | — |
 | `MAX_SEQ_LEN` | Longitud máxima de secuencia de entrada | `64` |
 | `DEVICE` | `auto`, `cpu`, `cuda`, `mps` | `auto` |
@@ -374,16 +374,6 @@ El endpoint usa clasificación real de routing desde
 - `id2label.json`
 - `label2id.json`
 - `train_config.json`
-
-### Soporte LoRA
-
-El router soporta modelos entrenados con **LoRA** (Low-Rank Adaptation):
-- Detección automática basada en `train_config.json`
-- Carga transparente de `encoder/lora_weights/` cuando está disponible
-- Compatibilidad backward total con modelos sin LoRA
-- Fallback seguro si faltan componentes LoRA
-
-Consulta **[LORA_INTEGRATION.md](LORA_INTEGRATION.md)** para detalles de integración, estructura de artefactos y guía de preparación de modelos.
 
 Guía operativa y detalles de artefactos en **[INTEGRATION.md](INTEGRATION.md)**.
 

@@ -119,9 +119,11 @@ def _to_response(raw_predict: dict, raw_route: dict | None) -> PredictResponse:
 
 
 def _route_or_none(text: str) -> dict | None:
-    """Return routing dict, or None if router is disabled / not loaded."""
-    if not settings.router_enabled or not router_bundle.is_loaded:
+    """Return routing dict, or None only when router is intentionally disabled."""
+    if not settings.router_enabled:
         return None
+    if not router_bundle.is_loaded:
+        raise HTTPException(status_code=503, detail="Router model is enabled but not loaded.")
     return route(router_bundle, text)
 
 

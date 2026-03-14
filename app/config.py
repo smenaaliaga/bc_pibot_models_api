@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     model_source: ModelSource = ModelSource.huggingface
     hf_repo_id: str = "BCCh/pibert"
     hf_token: str | None = None
+    hf_sync_on_startup: bool = True
     model_local_dir: str | None = None  # required when model_source == local
 
     # ── Inference ─────────────────────────────────────────────

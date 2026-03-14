@@ -40,11 +40,8 @@ async def lifespan(app: FastAPI):
 
     # Router – optional (failure does not block the service)
     if settings.router_enabled:
-        try:
-            router_bundle.load()
-            logger.info("Router model ready")
-        except Exception:
-            logger.exception("Router model failed to load – routing will be disabled")
+        router_bundle.load()
+        logger.info("Router model ready")
 
     logger.info("All models loaded – accepting requests")
     yield

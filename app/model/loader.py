@@ -5,6 +5,7 @@ and instantiates the JointBERT model + tokenizer + label maps.
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Dict, List
@@ -17,6 +18,47 @@ from transformers.utils import logging as hf_logging
 from app.config import ModelSource, settings
 
 logger = logging.getLogger(__name__)
+
+_CACHE_META_FILENAME = ".hf_cache_meta.json"
+
+
+def _load_cache_meta(local_dir: Path) -> dict[str, str]:
+    meta_path = local_dir / _CACHE_META_FILENAME
+    if not meta_path.exists():
+        return {}
+    try:
+        with meta_path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:
+        logger.warning("Could not read cache metadata at %s", meta_path, exc_info=True)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_cache_meta(local_dir: Path, *, repo_id: str, revision: str, commit: str | None) -> None:
+    local_dir.mkdir(parents=True, exist_ok=True)
+    meta_path = local_dir / _CACHE_META_FILENAME
+    payload = {
+        "repo_id": repo_id,
+        "revision": revision,
+        "commit": commit or "",
+    }
+    with meta_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+
+def _read_hf_cache_ref_commit(repo_id: str, revision: str) -> str | None:
+    """Read commit from local HF refs cache if available."""
+    repo_cache_dir = Path("model_cache") / f"models--{repo_id.replace('/', '--')}" / "refs"
+    ref_path = repo_cache_dir / revision
+    if not ref_path.exists():
+        return None
+    try:
+        value = ref_path.read_text(encoding="utf-8").strip()
+    except Exception:
+        logger.warning("Could not read HF ref commit from %s", ref_path, exc_info=True)
+        return None
+    return value or None
 
 
 def _resolve_hf_commit(repo_id: str, revision: str, token: str | None) -> str | None:
@@ -145,6 +187,7 @@ def _resolve_model_dir() -> Path:
         return path
 
     # Hugging Face Hub
+    revision = "main"
     repo_dirname = settings.hf_repo_id.replace("/", "--")
     local_model_dir = Path("model_cache") / "snapshots" / repo_dirname
 
@@ -161,18 +204,68 @@ def _resolve_model_dir() -> Path:
         local_model_dir / "pytorch_model.bin",
     ]
     has_weights = any(f.exists() for f in weights_files)
-    if has_weights and all(path.exists() for path in marker_files):
-        logger.info("Using cached local model directory: %s", local_model_dir)
-        return local_model_dir
+    has_valid_cache = has_weights and all(path.exists() for path in marker_files)
+
+    expected_commit: str | None = None
+    if settings.hf_sync_on_startup:
+        expected_commit = _resolve_hf_commit(
+            repo_id=settings.hf_repo_id,
+            revision=revision,
+            token=settings.hf_token,
+        )
+
+    if has_valid_cache:
+        if not settings.hf_sync_on_startup:
+            logger.info("Using cached local model directory: %s", local_model_dir)
+            return local_model_dir
+
+        if expected_commit is None:
+            logger.warning(
+                "HF commit resolution failed for %s@%s. Reusing existing cache at %s",
+                settings.hf_repo_id,
+                revision,
+                local_model_dir,
+            )
+            return local_model_dir
+
+        cached_commit = _load_cache_meta(local_model_dir).get("commit") or _read_hf_cache_ref_commit(
+            settings.hf_repo_id,
+            revision,
+        )
+        if cached_commit is None:
+            logger.warning(
+                "Cached commit is unknown for %s at %s. Reusing cache without forced refresh.",
+                settings.hf_repo_id,
+                local_model_dir,
+            )
+            return local_model_dir
+        if cached_commit == expected_commit:
+            logger.info("Using cache aligned with HF commit %s at %s", expected_commit, local_model_dir)
+            return local_model_dir
+
+        logger.info(
+            "Refreshing model cache due to HF commit change: cached=%s remote=%s",
+            cached_commit or "unknown",
+            expected_commit,
+        )
 
     logger.info("Downloading model from HF: %s", settings.hf_repo_id)
     local_dir = snapshot_download(
         repo_id=settings.hf_repo_id,
+        revision=revision,
         token=settings.hf_token,
         local_dir=str(local_model_dir),
         # cache inside working dir so Docker layer caching works
         cache_dir="model_cache",
+        force_download=bool(has_valid_cache and expected_commit is not None),
     )
+    if settings.hf_sync_on_startup:
+        _save_cache_meta(
+            Path(local_dir),
+            repo_id=settings.hf_repo_id,
+            revision=revision,
+            commit=expected_commit,
+        )
     logger.info("Model downloaded to %s", local_dir)
     return Path(local_dir)
 
