@@ -300,6 +300,7 @@ def _download_router_artifacts(*, revision: str, expected_commit: str | None) ->
         "cache_dir": "model_cache",
         "local_dir": str(local_dir),
         "force_download": bool(has_valid_cache and expected_commit is not None),
+        "local_dir_use_symlinks": False,
     }
     downloaded_dir = Path(snapshot_download(**snapshot_kwargs))
     if settings.hf_sync_on_startup:

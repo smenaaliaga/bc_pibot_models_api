@@ -258,6 +258,7 @@ def _resolve_model_dir() -> Path:
         # cache inside working dir so Docker layer caching works
         cache_dir="model_cache",
         force_download=bool(has_valid_cache and expected_commit is not None),
+        local_dir_use_symlinks=False,
     )
     if settings.hf_sync_on_startup:
         _save_cache_meta(

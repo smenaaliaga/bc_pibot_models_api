@@ -33,12 +33,17 @@ COPY scripts/ ./scripts/
 # Ensure cache directory exists and is writable
 RUN mkdir -p /app/model_cache && chown -R appuser:appuser /app
 
-USER appuser
+# Entrypoint re-owns the model_cache volume (Docker named volumes can be
+# initialised with root ownership, overriding the chown above) then drops
+# privileges to appuser before exec-ing the main process.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 EXPOSE ${PORT}
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=180s --retries=3 \
     CMD ["python", "scripts/healthcheck.py"]
 
+ENTRYPOINT ["docker-entrypoint.sh"]
 # Uvicorn with sensible production defaults
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --workers 1 --timeout-keep-alive 65 --log-level info"]
